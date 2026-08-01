@@ -529,6 +529,12 @@ export function onVoiceClose(handler: ((from: string) => void) | null) {
 export function connect(hostPeerIdOverride?: string): Promise<void> {
   if (typeof window === "undefined") return Promise.resolve();
   const hostId = hostPeerIdOverride ?? currentHostPeerId;
+  const shouldRecreateHostPeer = Boolean(peer && hostId && mode === "host" && peer.id !== hostId);
+  if (shouldRecreateHostPeer) {
+    peer?.destroy();
+    peer = null;
+    hostConnection = null;
+  }
   if (peer) {
     if (hostId && mode === "guest" && !hostConnection?.open) {
       connectToHost(hostId);
@@ -546,8 +552,11 @@ export function connect(hostPeerIdOverride?: string): Promise<void> {
         secure: true,
         debug: 0,
       };
-      const guestPeerId = mode === "guest" ? undefined : String(hostId ?? "");
-      peer = new Peer(guestPeerId, peerOptions);
+      if (mode === "guest") {
+        peer = new Peer({ ...peerOptions });
+      } else {
+        peer = new Peer(String(hostId ?? ""), peerOptions);
+      }
     } catch (error) {
       console.error("PeerJS init failed", error);
       setGameState({ status: "offline" });
