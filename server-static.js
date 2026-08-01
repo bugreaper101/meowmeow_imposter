@@ -23,15 +23,31 @@ const server = http.createServer(async (req, res) => {
   try {
     const urlPath = decodeURIComponent(new URL(req.url, `http://${req.headers.host}`).pathname);
     const safePath = path.normalize(urlPath).replace(/^\/+/, '');
+    const hasExtension = path.extname(urlPath) !== '';
     const filePath = path.join(docs, safePath || 'index.html');
     const resolved = path.resolve(filePath);
     if (!resolved.startsWith(path.resolve(docs))) {
       res.writeHead(403); res.end('Forbidden'); return;
     }
-    const data = await readFile(resolved);
-    const ext = path.extname(resolved).toLowerCase();
-    res.writeHead(200, { 'content-type': mimeTypes[ext] || 'application/octet-stream' });
-    res.end(data);
+
+    try {
+      const data = await readFile(resolved);
+      const ext = path.extname(resolved).toLowerCase();
+      res.writeHead(200, { 'content-type': mimeTypes[ext] || 'application/octet-stream' });
+      res.end(data);
+      return;
+    } catch {
+      if (hasExtension || safePath === '') {
+        res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end('Not found');
+        return;
+      }
+
+      const indexPath = path.join(docs, 'index.html');
+      const indexData = await readFile(indexPath);
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(indexData);
+    }
   } catch {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
     res.end('Not found');
