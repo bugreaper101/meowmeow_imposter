@@ -600,10 +600,7 @@ function RoleReveal({ room, self }: Shared) {
       : { emoji: "🐾", title: "You are a Kitty", sub: "Use the secret word to give a clue." };
   const revealText = isImposter ? null : self?.secretWord ?? null;
   const reveal = () => {
-    if (ready) {
-      actions.continueToClue();
-      return;
-    }
+    if (ready) return;
     setFlipped(true);
     setReady(true);
     actions.roleSeen();
@@ -641,7 +638,7 @@ function RoleReveal({ room, self }: Shared) {
         <p className="mt-3 text-[11px] font-extrabold text-[#b19ba9]">Continuing in {label}</p>
       </div>
       <Button variant={ready ? "soft" : "primary"} onClick={reveal} icon={ready ? Check : ArrowRight}>
-        {ready ? "Next" : "Reveal my role"}
+        {ready ? "Ready" : "Reveal my role"}
       </Button>
     </div>
   );
@@ -679,6 +676,9 @@ function CluePhase({ room, playerId, self }: Shared) {
   const order: string[] = room.speakingOrder;
   const speaker = players.find((x) => x.id === room.currentSpeakerId) ?? players[0]!;
   const turn = Math.max(1, order.indexOf(room.currentSpeakerId ?? "") + 1);
+  const nextSpeaker = room.settings.writerMode === "sequential"
+    ? players.find((x) => x.id === order[turn]) ?? null
+    : null;
   const { label } = useCountdown(room.timer?.endsAt);
   const mine = room.currentSpeakerId === playerId;
   const spokenIds = order.slice(0, turn - 1);
@@ -696,6 +696,12 @@ function CluePhase({ room, playerId, self }: Shared) {
         <p className="font-[Baloo_2] text-2xl font-extrabold text-[#493e58]">{mine ? "Your turn!" : `${speaker.nickname} is speaking`}</p>
         <TimerRing value={label} label={label === "∞" ? "unlimited" : "clue time"} />
         {self?.secretWord && <Badge tone="mint">WORD · {self.secretWord}</Badge>}
+        {nextSpeaker && (
+          <div className="rounded-2xl bg-white px-4 py-3 text-center shadow-[0_4px_0_#eee3e9]">
+            <p className="text-[10px] font-extrabold uppercase tracking-[.16em] text-[#a58da2]">Next</p>
+            <p className="font-[Baloo_2] text-lg font-extrabold text-[#493e58]">{nextSpeaker.nickname}</p>
+          </div>
+        )}
         <div className="flex flex-wrap justify-center gap-2">
           {order.map((id: string) => {
             const player = players.find((x) => x.id === id);

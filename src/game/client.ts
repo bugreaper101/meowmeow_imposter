@@ -242,6 +242,27 @@ function setRoomTimer(room: HostRoom, phase: RoomState["phase"], seconds: number
     : { phase, endsAt: null, duration: seconds ?? 0 };
 }
 
+function startCluePhase(room: HostRoom) {
+  room.phase = "clue";
+  room.currentSpeakerId = room.speakingOrder[0] ?? getOrderedPlayers(room)[0]?.id ?? null;
+  setRoomTimer(room, "clue", room.settings.clueSeconds);
+}
+
+function advanceClueTurn(room: HostRoom) {
+  if (room.phase !== "clue") return;
+  const currentIndex = room.speakingOrder.indexOf(room.currentSpeakerId ?? "");
+  const nextIndex = currentIndex + 1;
+  if (nextIndex < room.speakingOrder.length) {
+    room.currentSpeakerId = room.speakingOrder[nextIndex] ?? null;
+    setRoomTimer(room, "clue", room.settings.clueSeconds);
+    return;
+  }
+  room.currentSpeakerId = null;
+  room.phase = "discussion";
+  setRoomTimer(room, "discussion", room.settings.discussionSeconds);
+  startAutoAdvanceTimer();
+}
+
 function finalizeDiscussion(room: HostRoom) {
   if (room.phase !== "discussion") return;
   const connectedPlayers = getConnectedPlayers(room);
@@ -323,6 +344,11 @@ function startAutoAdvanceTimer() {
     if (!localRoom || mode !== "host") return;
     if (localRoom.phase === "discussion" && localRoom.timer?.endsAt && Date.now() >= localRoom.timer.endsAt) {
       finalizeDiscussion(localRoom);
+      publishStateToAll();
+      return;
+    }
+    if (localRoom.phase === "clue" && localRoom.timer?.endsAt && Date.now() >= localRoom.timer.endsAt) {
+      advanceClueTurn(localRoom);
       publishStateToAll();
     }
   }, 250);
@@ -510,14 +536,15 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
       case "roleSeen":
         if (localRoom.phase !== "roleReveal") return;
         player.roleSeen = true;
+        if (localRoom.players.every((entry) => entry.roleSeen || !entry.connected)) {
+          startCluePhase(localRoom);
+        }
         publishStateToAll();
         break;
       case "continueToClue":
         if (localRoom.phase !== "roleReveal") return;
         if (!localRoom.players.every((entry) => entry.roleSeen || !entry.connected)) return;
-        localRoom.phase = "clue";
-        localRoom.currentSpeakerId = localRoom.speakingOrder[0] ?? getOrderedPlayers(localRoom)[0]?.id ?? null;
-        setRoomTimer(localRoom, "clue", localRoom.settings.clueSeconds);
+        startCluePhase(localRoom);
         publishStateToAll();
         break;
       case "ready":
@@ -533,15 +560,8 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
       case "finishTurn":
       case "skipTurn":
         if (localRoom.phase === "clue") {
-          const currentIndex = localRoom.speakingOrder.indexOf(localRoom.currentSpeakerId ?? "");
-          const nextIndex = currentIndex + 1;
-          if (nextIndex < localRoom.speakingOrder.length) {
-            localRoom.currentSpeakerId = localRoom.speakingOrder[nextIndex] ?? null;
-            setRoomTimer(localRoom, "clue", localRoom.settings.clueSeconds);
-          } else {
-            localRoom.currentSpeakerId = null;
-            localRoom.phase = "discussion";
-            setRoomTimer(localRoom, "discussion", localRoom.settings.discussionSeconds);
+          advanceClueTurn(localRoom);
+          if (localRoom.phase === "discussion") {
             startAutoAdvanceTimer();
           }
         }
