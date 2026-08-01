@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverEntry = path.join(__dirname, '.output', 'server', 'index.mjs');
+const publicDir = path.join(__dirname, '.output', 'public');
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || '0.0.0.0';
 
@@ -18,6 +19,53 @@ const appModule = await import(entryUrl);
 const app = appModule.default ?? appModule;
 const handler = typeof app?.fetch === 'function' ? app.fetch.bind(app) : null;
 
+const assetHandler = {
+  async fetch(request) {
+    const url = new URL(request.url);
+    const safePath = decodeURIComponent(url.pathname).replace(/^\/+/, '');
+    const filePath = path.join(publicDir, safePath || 'index.html');
+    const normalized = path.normalize(filePath);
+
+    if (!normalized.startsWith(path.normalize(publicDir))) {
+      return new Response('Forbidden', { status: 403 });
+    }
+
+    const tries = [normalized];
+    if (!path.extname(normalized)) {
+      tries.push(path.join(publicDir, safePath, 'index.html'));
+    }
+
+    for (const candidate of tries) {
+      if (existsSync(candidate)) {
+        const body = await import('node:fs/promises').then((fs) => fs.readFile(candidate));
+        const ext = path.extname(candidate).toLowerCase();
+        const typeMap = {
+          '.html': 'text/html; charset=utf-8',
+          '.js': 'application/javascript; charset=utf-8',
+          '.css': 'text/css; charset=utf-8',
+          '.json': 'application/json; charset=utf-8',
+          '.svg': 'image/svg+xml',
+          '.png': 'image/png',
+          '.jpg': 'image/jpeg',
+          '.jpeg': 'image/jpeg',
+          '.ico': 'image/x-icon',
+          '.txt': 'text/plain; charset=utf-8',
+          '.map': 'application/json; charset=utf-8',
+        };
+        return new Response(body, {
+          headers: {
+            'Content-Type': typeMap[ext] || 'application/octet-stream',
+            'Cache-Control': 'public, max-age=31536000, immutable',
+          },
+          status: 200,
+        });
+      }
+    }
+
+    return new Response('Not Found', { status: 404 });
+  },
+};
+
 if (!handler) {
   console.error('Built server entry does not export a fetch handler.');
   process.exit(1);
@@ -26,13 +74,31 @@ if (!handler) {
 const server = createServer(async (req, res) => {
   try {
     const requestUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+    const method = req.method || 'GET';
+    const requestBody = method !== 'GET' && method !== 'HEAD' ? await new Promise((resolve, reject) => {
+      const chunks = [];
+      req.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+      req.on('end', () => resolve(Buffer.concat(chunks)));
+      req.on('error', reject);
+    }) : undefined;
+
     const request = new Request(requestUrl, {
-      method: req.method,
+      method,
       headers: req.headers,
-      body: req.method !== 'GET' && req.method !== 'HEAD' ? req : undefined,
+      body: requestBody && requestBody.length > 0 ? requestBody : undefined,
     });
 
-    const response = await handler(request, {}, {});
+    const waitUntil = () => undefined;
+    const context = {
+      waitUntil,
+      passThroughOnException: () => undefined,
+      context: {
+        waitUntil,
+        passThroughOnException: () => undefined,
+      },
+    };
+
+    const response = await handler(request, { ASSETS: assetHandler }, context);
     const headers = Object.fromEntries(response.headers.entries());
     res.writeHead(response.status, headers);
     if (response.body) {
