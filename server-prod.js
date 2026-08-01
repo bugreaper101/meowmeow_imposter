@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -8,6 +8,13 @@ const serverEntry = path.join(__dirname, '.output', 'server', 'index.mjs');
 const publicDir = path.join(__dirname, '.output', 'public');
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || '0.0.0.0';
+const clientBundle = (() => {
+  if (!existsSync(path.join(publicDir, 'assets'))) return '/assets/index.js';
+  const candidates = readdirSync(path.join(publicDir, 'assets'))
+    .filter((file) => file.endsWith('.js') && file.startsWith('index-'))
+    .sort();
+  return candidates.length ? `/assets/${candidates[0]}` : '/assets/index.js';
+})();
 
 if (!existsSync(serverEntry)) {
   console.error(`Built server entry not found at ${serverEntry}. Run "npm run build" first.`);
@@ -74,6 +81,13 @@ if (!handler) {
 const server = createServer(async (req, res) => {
   try {
     const requestUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+
+    if (requestUrl.pathname.includes('tanstack-start-dev-client-entry')) {
+      res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8' });
+      res.end(`import ${JSON.stringify(clientBundle)};`);
+      return;
+    }
+
     const method = req.method || 'GET';
     const requestBody = method !== 'GET' && method !== 'HEAD' ? await new Promise((resolve, reject) => {
       const chunks = [];
