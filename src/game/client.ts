@@ -539,14 +539,15 @@ export function connect(hostPeerIdOverride?: string): Promise<void> {
   setGameState({ status: "connecting" });
   return new Promise((resolve) => {
     try {
-      const peerId = String(hostId ?? "");
-      peer = new Peer(peerId, {
+      const peerOptions = {
         host: "0.peerjs.com",
         port: 443,
         path: "/",
         secure: true,
         debug: 0,
-      });
+      };
+      const guestPeerId = mode === "guest" ? undefined : String(hostId ?? "");
+      peer = new Peer(guestPeerId, peerOptions);
     } catch (error) {
       console.error("PeerJS init failed", error);
       setGameState({ status: "offline" });
