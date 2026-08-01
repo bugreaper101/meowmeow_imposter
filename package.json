@@ -7,7 +7,7 @@
     "dev": "vite dev",
     "build": "vite build && node scripts/build-pages.js",
     "build:dev": "vite build --mode development",
-    "start": "node server-static.js",
+    "start": "node server-prod.js",
     "preview": "vite preview",
     "lint": "eslint .",
     "format": "prettier --write ."
