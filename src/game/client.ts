@@ -66,6 +66,19 @@ let currentToken: string | null = null;
 let localRoom: HostRoom | null = null;
 let peerConnections = new Map<string, DataConnection>();
 
+function flushQueuedMessages() {
+  if (!hostConnection || !hostConnection.open) return;
+  const pending = queue;
+  queue = [];
+  for (const msg of pending) {
+    try {
+      hostConnection.send(msg);
+    } catch {
+      queue.push(msg);
+    }
+  }
+}
+
 function generateRoomCode() {
   return `${Math.floor(10000 + Math.random() * 90000)}`;
 }
@@ -218,6 +231,11 @@ function resetRoomState() {
 }
 
 function bindPeerEvents(conn: DataConnection) {
+  conn.on("open", () => {
+    if (mode === "guest" && hostConnection?.peer === conn.peer) {
+      flushQueuedMessages();
+    }
+  });
   conn.on("data", (data) => {
     const msg = data as Outgoing;
     if (!msg || typeof msg.t !== "string") return;
@@ -267,14 +285,14 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
       return;
     }
     if (msg.t === "joinRoom") {
-      const roomCode = String(msg.code || "").trim();
+      const roomCode = String(msg["code"] || "").trim();
       if (!localRoom || localRoom.code !== roomCode) return;
       const playerId = generatePlayerId();
       const player: PlayerRecord = {
         id: playerId,
         peerId: conn.peer,
-        nickname: String(msg.nickname || "Guest"),
-        avatar: typeof msg.avatar === "string" ? msg.avatar : null,
+        nickname: String(msg["nickname"] || "Guest"),
+        avatar: typeof msg["avatar"] === "string" ? msg["avatar"] : null,
         connected: true,
         host: false,
         ready: false,
@@ -326,12 +344,12 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
     if (!localRoom || !player) return;
     switch (msg.t) {
       case "selectAvatar":
-        player.avatar = typeof msg.avatar === "string" ? msg.avatar : null;
+        player.avatar = typeof msg["avatar"] === "string" ? msg["avatar"] : null;
         publishStateToAll();
         break;
       case "updateSettings":
         if (player.id !== localRoom.hostId) return;
-        localRoom.settings = { ...localRoom.settings, ...(msg.settings as Partial<RoomSettings>) };
+        localRoom.settings = { ...localRoom.settings, ...(msg["settings"] as Partial<RoomSettings>) };
         publishStateToAll();
         break;
       case "startGame":
@@ -344,7 +362,7 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
         break;
       case "submitWord":
         if (localRoom.phase !== "writer" || player.id !== localRoom.writerId) return;
-        localRoom.secretWord = String(msg.word || "");
+        localRoom.secretWord = String(msg["word"] || "");
         localRoom.phase = "roleReveal";
         publishStateToAll();
         break;
@@ -380,7 +398,7 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
         break;
       case "vote":
         if (localRoom.phase !== "voting") return;
-        player.vote = String(msg.targetId || "");
+        player.vote = String(msg["targetId"] || "");
         player.voted = true;
         localRoom.voted = localRoom.players.filter((entry) => entry.voted && entry.connected).map((entry) => entry.id);
         if (localRoom.voted.length === localRoom.players.filter((entry) => entry.connected).length) {
@@ -433,22 +451,22 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
         publishStateToAll();
         break;
       case "voiceState":
-        player.mic = Boolean(msg.mic);
-        player.speaker = Boolean(msg.speaker);
+        player.mic = Boolean(msg["mic"]);
+        player.speaker = Boolean(msg["speaker"]);
         publishStateToAll();
         break;
       case "rtc":
-        if (typeof msg.to === "string") {
-          const target = localRoom.players.find((entry) => entry.id === msg.to);
+        if (typeof msg["to"] === "string") {
+          const target = localRoom.players.find((entry) => entry.id === msg["to"]);
           if (target) {
             const targetConn = peerConnections.get(target.peerId);
-            targetConn?.send({ t: "rtc", from: player.peerId, signal: msg.signal });
+            targetConn?.send({ t: "rtc", from: player.peerId, signal: msg["signal"] });
           }
         }
         break;
       case "rtc-close":
-        if (typeof msg.to === "string") {
-          const target = localRoom.players.find((entry) => entry.id === msg.to);
+        if (typeof msg["to"] === "string") {
+          const target = localRoom.players.find((entry) => entry.id === msg["to"]);
           if (target) {
             const targetConn = peerConnections.get(target.peerId);
             targetConn?.send({ t: "rtc-close", from: player.peerId });
@@ -463,30 +481,30 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
 
   if (mode === "guest") {
     if (msg.t === "session") {
-      currentPlayerId = String(msg.playerId || currentPlayerId);
-      currentToken = String(msg.token || currentToken);
-      saveSession({ code: String(msg.code || currentRoomCode || ""), token: String(msg.token || currentToken || "") });
+      currentPlayerId = String(msg["playerId"] || currentPlayerId);
+      currentToken = String(msg["token"] || currentToken);
+      saveSession({ code: String(msg["code"] || currentRoomCode || ""), token: String(msg["token"] || currentToken || "") });
       setGameState({ playerId: currentPlayerId });
       return;
     }
     if (msg.t === "room") {
-      setGameState({ room: msg.room as RoomState });
+      setGameState({ room: msg["room"] as RoomState });
       return;
     }
     if (msg.t === "private") {
-      setGameState({ self: msg.private as PrivateState });
+      setGameState({ self: msg["private"] as PrivateState });
       return;
     }
     if (msg.t === "peers") {
-      setGameState({ peers: msg.peers as string[] });
+      setGameState({ peers: msg["peers"] as string[] });
       return;
     }
     if (msg.t === "rtc") {
-      signalHandler?.(String(msg.from || ""), msg.signal);
+      signalHandler?.(String(msg["from"] || ""), msg["signal"]);
       return;
     }
     if (msg.t === "rtc-close") {
-      closeHandler?.(String(msg.from || ""));
+      closeHandler?.(String(msg["from"] || ""));
       return;
     }
     if (msg.t === "celebrate") {
@@ -494,7 +512,7 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
       return;
     }
     if (msg.t === "error") {
-      setGameState({ lastError: { code: String(msg.code || ""), message: String(msg.message || "") } });
+      setGameState({ lastError: { code: String(msg["code"] || ""), message: String(msg["message"] || "") } });
       return;
     }
   }
@@ -510,13 +528,18 @@ export function onVoiceClose(handler: ((from: string) => void) | null) {
 
 export function connect(hostPeerIdOverride?: string): Promise<void> {
   if (typeof window === "undefined") return Promise.resolve();
-  if (peer) return Promise.resolve();
+  const hostId = hostPeerIdOverride ?? currentHostPeerId;
+  if (peer) {
+    if (hostId && mode === "guest" && !hostConnection?.open) {
+      connectToHost(hostId);
+    }
+    return Promise.resolve();
+  }
   intentionalClose = false;
   setGameState({ status: "connecting" });
-  const hostId = hostPeerIdOverride ?? currentHostPeerId;
   return new Promise((resolve) => {
     try {
-      peer = new Peer(hostId ?? undefined, {
+      peer = new Peer(hostId || undefined, {
         host: "0.peerjs.com",
         port: 443,
         path: "/",
@@ -533,12 +556,12 @@ export function connect(hostPeerIdOverride?: string): Promise<void> {
     peer.on("open", (id) => {
       currentPlayerId = currentPlayerId ?? id;
       setGameState({ status: "online", lastError: null, playerId: currentPlayerId });
-      if (hostId && mode === "guest") {
+      if (hostId && mode === "guest" && !hostConnection?.open) {
         connectToHost(hostId);
       }
-      const pending = queue;
-      queue = [];
-      for (const msg of pending) send(msg);
+      if (hostConnection?.open) {
+        flushQueuedMessages();
+      }
       resolve();
     });
 
@@ -561,6 +584,9 @@ function connectToHost(hostId: string) {
   const conn = peer.connect(hostId, { reliable: true });
   hostConnection = conn;
   bindPeerEvents(conn);
+  if (conn.open) {
+    flushQueuedMessages();
+  }
 }
 
 export function send(msg: Outgoing) {
@@ -569,8 +595,8 @@ export function send(msg: Outgoing) {
     currentRoomCode = roomCode;
     currentHostPeerId = hostPeerId(roomCode);
     currentPlayerId = generatePlayerId();
-    currentPlayerNick = String(msg.nickname || "Guest");
-    currentAvatar = typeof msg.avatar === "string" ? msg.avatar : null;
+    currentPlayerNick = String(msg["nickname"] || "Guest");
+    currentAvatar = typeof msg["avatar"] === "string" ? msg["avatar"] : null;
     localRoom = createDefaultRoom(roomCode);
     localRoom.hostId = currentPlayerId;
     localRoom.players.push({
@@ -602,10 +628,10 @@ export function send(msg: Outgoing) {
 
   if (msg.t === "joinRoom") {
     mode = "guest";
-    currentRoomCode = String(msg.code || "");
+    currentRoomCode = String(msg["code"] || "");
     currentHostPeerId = hostPeerId(currentRoomCode);
-    currentPlayerNick = String(msg.nickname || "Guest");
-    currentAvatar = typeof msg.avatar === "string" ? msg.avatar : null;
+    currentPlayerNick = String(msg["nickname"] || "Guest");
+    currentAvatar = typeof msg["avatar"] === "string" ? msg["avatar"] : null;
     queue.push(msg);
     void connect(currentHostPeerId);
     return;
@@ -631,7 +657,13 @@ export function send(msg: Outgoing) {
   }
 
   queue.push(msg);
-  if (currentHostPeerId) void connect(currentHostPeerId);
+  if (currentHostPeerId) {
+    if (!peer || !peer.open) {
+      void connect(currentHostPeerId);
+      return;
+    }
+    connectToHost(currentHostPeerId);
+  }
 }
 
 export function disconnect() {
