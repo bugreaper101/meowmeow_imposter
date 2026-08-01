@@ -43,7 +43,7 @@ export default function MeowMeowImposter() {
   const [micOn, setMicOn] = useState(true);
   const [speakerOn, setSpeakerOn] = useState(true);
   const [selectedVote, setSelectedVote] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<null | "leave" | "full" | "lost">(null);
+  const [dialog, setDialog] = useState<null | "leave" | "full" | "lost" | "notFound">(null);
   const [toast, setToast] = useState("");
 
   // Preferences are the only thing that survives a reload.
@@ -65,6 +65,7 @@ export default function MeowMeowImposter() {
   useEffect(() => {
     if (!lastError) return;
     if (lastError.code === "room_full") setDialog("full");
+    else if (lastError.code === "room_not_found") setDialog("notFound");
     else setToast(lastError.message);
     clearError();
   }, [lastError]);
@@ -237,6 +238,7 @@ export default function MeowMeowImposter() {
           <LeaveDialog onStay={() => setDialog(null)} onLeave={() => { setDialog(null); leaveRoom(); }} />
         )}
         <Dialog open={dialog === "full"} emoji="🙀" title="This room is full" body="Oops! Every cushion is taken. Try another room code or make your own room." primary="Try again" onClose={() => setDialog(null)} />
+        <Dialog open={dialog === "notFound"} emoji="🐾" title="Found no kitty room" body="That room code doesn’t seem to be open right meow. Double-check the code and try again." primary="Try again" onClose={() => setDialog(null)} />
         <Dialog open={dialog === "lost"} emoji="📶" title="Connection lost" body="We lost the yarn thread! Reconnecting you to the room right meow." primary="Keep trying" onClose={() => setDialog(null)} />
         <div className="relative flex items-center justify-between px-7 pb-5">
           <span className="text-[10px] font-extrabold uppercase tracking-[.16em] text-[#b19ba9]">
@@ -404,6 +406,11 @@ function AvatarSelect({ go, back, avatar, setAvatar, tab, setTab, search, setSea
     if (mode === "create") go("Host Settings");
     else joinRoom();
   };
+  const pickAvatar = (name: string) => {
+    setAvatar(name);
+    if (room) actions.selectAvatar(name);
+    setToast(`${name} joined your side ✨`);
+  };
   return (
     <div className="flex flex-1 flex-col">
       <Top title="Choose your avatar" sub="70 fluffy friends waiting to be picked." back onBack={back} />
@@ -422,7 +429,7 @@ function AvatarSelect({ go, back, avatar, setAvatar, tab, setTab, search, setSea
           const isTaken = taken.includes(a.name) && a.name !== avatar;
           const active = a.name === avatar;
           return (
-            <button key={a.name} disabled={isTaken} onClick={() => { setAvatar(a.name); setToast(`${a.name} joined your side ✨`); }}
+            <button key={a.name} disabled={isTaken} onClick={() => pickAvatar(a.name)}
               className={`relative grid place-items-center rounded-2xl p-1.5 transition ${active ? "bg-[#fff2cd] shadow-[0_4px_0_#f0dfae]" : "bg-white shadow-[0_3px_0_#f1e6ed]"} ${isTaken ? "opacity-45" : ""}`}>
               <Bean player={a} size="sm" dim={isTaken} />
               <span className="mt-1 truncate text-[9px] font-extrabold text-[#7d6a81]">{a.name}</span>

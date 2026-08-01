@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { motion } from "motion/react";
-import { ArrowLeft, Lock, Mic, MicOff, Volume2, VolumeX } from "lucide-react";
+import { ArrowLeft, LoaderCircle, Lock, Mic, MicOff, Volume2, VolumeX } from "lucide-react";
 import type { MeowAvatar } from "./data";
 
 export function Bean({ player, size = "md", ring = false, dim = false }: { player: MeowAvatar; size?: "xs" | "sm" | "md" | "lg"; ring?: boolean; dim?: boolean }) {
@@ -35,10 +36,11 @@ export function Button({ children, onClick, variant = "primary", disabled = fals
     soft: "bg-[#edf8f2] text-[#43866b] shadow-[0_4px_0_#c6e8d6]",
     ghost: "bg-white/80 text-[#74647d] shadow-[0_3px_0_#eadce5]",
   };
+  const iconClass = Icon === LoaderCircle ? "animate-[spin_1s_linear_infinite]" : "";
   return (
     <motion.button whileHover={disabled ? {} : { y: -1 }} whileTap={disabled ? {} : { scale: 0.97, y: 2 }} transition={{ type: "spring", stiffness: 500, damping: 24 }} disabled={disabled} onClick={onClick}
       className={`flex h-13 w-full items-center justify-center gap-2 rounded-2xl px-5 font-extrabold transition-all disabled:cursor-not-allowed disabled:opacity-45 ${variants[variant]} ${className}`}>
-      {Icon && <Icon size={18} strokeWidth={2.5} />} {children}
+      {Icon && <Icon size={18} strokeWidth={2.5} className={iconClass} />} {children}
     </motion.button>
   );
 }
@@ -112,13 +114,46 @@ export function Segmented({ title, helper, options, value, setValue }: { title: 
 }
 
 export function SlideConfirm({ label, done, onDone }: { label: string; done: boolean; onDone: () => void }) {
+  const maxX = 188;
+  const [dragX, setDragX] = useState(0);
+
+  const complete = (nextX: number) => {
+    if (done) return;
+    const clamped = Math.min(maxX, Math.max(0, nextX));
+    setDragX(clamped);
+    if (clamped > maxX * 0.55) {
+      setDragX(maxX);
+      onDone();
+    } else {
+      setDragX(0);
+    }
+  };
+
   return (
-    <motion.button whileTap={{ scale: 0.98 }} onClick={onDone}
-      className="relative flex h-14 w-full items-center overflow-hidden rounded-2xl bg-[#fdeaf1] px-2 shadow-[0_5px_0_#f1d3e0]">
-      <motion.span animate={done ? { left: "calc(100% - 3rem)" } : { left: "0.5rem" }} transition={{ type: "spring", stiffness: 300, damping: 26 }}
-        className="absolute grid size-10 place-items-center rounded-xl bg-[#ef6d9a] text-white shadow-[0_3px_0_#cf547e]">🐾</motion.span>
+    <motion.div
+      className="relative flex h-14 w-full items-center overflow-hidden rounded-2xl bg-[#fdeaf1] px-2 shadow-[0_5px_0_#f1d3e0]"
+      onClick={() => {
+        if (!done) complete(maxX);
+      }}>
+      <motion.span
+        drag="x"
+        dragConstraints={{ left: 0, right: maxX }}
+        dragElastic={0.12}
+        dragMomentum={false}
+        animate={done ? { x: maxX } : { x: dragX }}
+        transition={{ type: "spring", stiffness: 320, damping: 28 }}
+        onDrag={(_, info) => {
+          setDragX(Math.min(maxX, Math.max(0, info.offset.x)));
+        }}
+        onDragEnd={(_, info) => {
+          complete(info.offset.x);
+        }}
+        onTap={() => {
+          if (!done) complete(maxX);
+        }}
+        className="absolute z-10 grid size-10 place-items-center rounded-xl bg-[#ef6d9a] text-white shadow-[0_3px_0_#cf547e]">🐾</motion.span>
       <span className="w-full text-center font-extrabold text-[#b04f73]">{done ? "Confirmed! ✨" : label}</span>
-    </motion.button>
+    </motion.div>
   );
 }
 
