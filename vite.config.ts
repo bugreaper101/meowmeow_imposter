@@ -6,7 +6,7 @@ export default defineConfig({
   base: process.env.GITHUB_ACTIONS ? `/${repoName}/` : "/",
   tanstackStart: {
     server: {
-      entry: "server",
+      entry: "src/server",
     },
   },
 });
