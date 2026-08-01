@@ -123,6 +123,7 @@ function createDefaultRoom(code: string): HostRoom {
 }
 
 function buildPublicRoom(room: HostRoom): RoomState {
+  const takenAvatars = [...new Set(room.players.map((player) => player.avatar).filter(Boolean) as string[])];
   return {
     code: room.code,
     phase: room.phase,
@@ -136,7 +137,7 @@ function buildPublicRoom(room: HostRoom): RoomState {
     speakingOrder: [...room.speakingOrder],
     currentSpeakerId: room.currentSpeakerId,
     timer: room.timer,
-    takenAvatars: [...room.takenAvatars],
+    takenAvatars,
     voted: [...room.voted],
     result: room.result,
     revealedWord: room.revealedWord,
@@ -195,6 +196,7 @@ function publishRoom(room: HostRoom, fromPeerId?: string) {
 function publishStateToAll() {
   if (!localRoom) return;
   publishRoom(localRoom);
+  updateStoreFromRoom(localRoom);
 }
 
 function updateStoreFromRoom(room: HostRoom) {
@@ -327,6 +329,7 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
       } catch {
         // ignore send issues
       }
+      localRoom.takenAvatars = [...new Set(localRoom.players.map((entry) => entry.avatar).filter(Boolean) as string[])];
       publishStateToAll();
       return;
     }
@@ -345,6 +348,7 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
     switch (msg.t) {
       case "selectAvatar":
         player.avatar = typeof msg["avatar"] === "string" ? msg["avatar"] : null;
+        localRoom.takenAvatars = [...new Set(localRoom.players.map((entry) => entry.avatar).filter(Boolean) as string[])];
         publishStateToAll();
         break;
       case "updateSettings":
@@ -355,9 +359,23 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
       case "startGame":
         if (player.id !== localRoom.hostId) return;
         if (localRoom.phase !== "lobby") return;
+        const connectedPlayers = localRoom.players.filter((entry) => entry.connected);
+        if (connectedPlayers.length < 3) return;
+        if (connectedPlayers.some((entry) => !entry.avatar)) return;
+        if (localRoom.settings.imposters >= connectedPlayers.length - 1) return;
+        localRoom.locked = true;
         localRoom.phase = "writer";
-        localRoom.writerId = localRoom.players.find((entry) => entry.connected)?.id ?? null;
+        localRoom.writerId = connectedPlayers[0]?.id ?? null;
         localRoom.currentSpeakerId = null;
+        localRoom.takenAvatars = [...new Set(localRoom.players.map((entry) => entry.avatar).filter(Boolean) as string[])];
+        localRoom.players.forEach((entry) => {
+          entry.ready = false;
+          entry.roleSeen = false;
+          entry.voted = false;
+          entry.vote = null;
+          entry.role = null;
+          entry.eliminated = false;
+        });
         publishStateToAll();
         break;
       case "submitWord":
@@ -566,6 +584,13 @@ export function connect(hostPeerIdOverride?: string): Promise<void> {
 
     peer.on("open", (id) => {
       currentPlayerId = currentPlayerId ?? id;
+      if (mode === "host" && localRoom) {
+        const hostPlayer = localRoom.players.find((entry) => entry.id === currentPlayerId);
+        if (hostPlayer && hostPlayer.peerId !== id) {
+          hostPlayer.peerId = id;
+          publishStateToAll();
+        }
+      }
       setGameState({ status: "online", lastError: null, playerId: currentPlayerId });
       if (hostId && mode === "guest" && !hostConnection?.open) {
         connectToHost(hostId);
@@ -594,6 +619,14 @@ function connectToHost(hostId: string) {
   if (!peer || hostConnection?.open) return;
   const conn = peer.connect(hostId, { reliable: true });
   hostConnection = conn;
+  conn.on("error", (error) => {
+    console.error("PeerJS host connection failed", error);
+    hostConnection = null;
+    setGameState({
+      status: "offline",
+      lastError: { code: "room_not_found", message: "We couldn't find that room." },
+    });
+  });
   bindPeerEvents(conn);
   if (conn.open) {
     flushQueuedMessages();
