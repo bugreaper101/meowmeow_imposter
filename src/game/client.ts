@@ -187,7 +187,9 @@ function shuffle<T>(items: T[]): T[] {
   const result = [...items];
   for (let index = result.length - 1; index > 0; index -= 1) {
     const swapIndex = Math.floor(Math.random() * (index + 1));
-    [result[index], result[swapIndex]] = [result[swapIndex], result[index]];
+    const current = result[index]!;
+    const swapValue = result[swapIndex]!;
+    [result[index], result[swapIndex]] = [swapValue, current];
   }
   return result;
 }
@@ -462,7 +464,13 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
         break;
       case "updateSettings":
         if (player.id !== localRoom.hostId) return;
-        localRoom.settings = { ...localRoom.settings, ...(msg["settings"] as Partial<RoomSettings>) };
+        const settingsPatch = msg["settings"] as Partial<RoomSettings>;
+        if (settingsPatch) {
+          if (typeof settingsPatch.rounds === "number") {
+            localRoom.maxRounds = settingsPatch.rounds;
+          }
+          localRoom.settings = { ...localRoom.settings, ...settingsPatch };
+        }
         publishStateToAll();
         break;
       case "startGame":
@@ -541,7 +549,12 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
         break;
       case "vote":
         if (localRoom.phase !== "discussion" && localRoom.phase !== "voting") return;
-        player.vote = String(msg["targetId"] || "");
+        if (player.voted) return;
+        const targetId = String(msg["targetId"] || "");
+        if (!targetId || targetId === player.id) return;
+        const targetPlayer = localRoom.players.find((entry) => entry.id === targetId && entry.connected);
+        if (!targetPlayer) return;
+        player.vote = targetId;
         player.voted = true;
         localRoom.voted = localRoom.players.filter((entry) => entry.voted && entry.connected).map((entry) => entry.id);
         publishStateToAll();
@@ -766,6 +779,13 @@ export function send(msg: Outgoing) {
     currentPlayerNick = String(msg["nickname"] || "Guest");
     currentAvatar = typeof msg["avatar"] === "string" ? msg["avatar"] : null;
     localRoom = createDefaultRoom(roomCode);
+    const initialSettings = msg["settings"] as Partial<RoomSettings> | undefined;
+    if (initialSettings) {
+      if (typeof initialSettings.rounds === "number") {
+        localRoom.maxRounds = initialSettings.rounds;
+      }
+      localRoom.settings = { ...localRoom.settings, ...initialSettings };
+    }
     localRoom.hostId = currentPlayerId;
     localRoom.players.push({
       id: currentPlayerId,

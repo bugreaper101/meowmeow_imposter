@@ -592,11 +592,13 @@ function RoleReveal({ room, self }: Shared) {
   const { label } = useCountdown(room.timer?.endsAt);
   useEffect(() => { setFlipped(false); setReady(false); }, [room.round]);
   const role = self?.role;
-  const copy = role === "imposter"
+  const isImposter = role === "imposter";
+  const copy = isImposter
     ? { emoji: "🐱‍👤", title: "You are the Imposter", sub: "Blend in. Guess the word. Don’t get caught." }
     : role === "writer"
       ? { emoji: "✎", title: "You are the Writer", sub: "You chose the word — give fair clues." }
       : { emoji: "🐾", title: "You are a Kitty", sub: "Use the secret word to give a clue." };
+  const revealText = isImposter ? null : self?.secretWord ?? null;
   const reveal = () => {
     if (ready) {
       actions.continueToClue();
@@ -616,8 +618,10 @@ function RoleReveal({ room, self }: Shared) {
             {flipped ? (
               <>
                 <p className="text-4xl">{copy.emoji}</p>
-                <p className="mt-3 font-[Baloo_2] text-2xl font-extrabold text-[#5b4b86]">{copy.title}</p>
-                <p className="mt-1 text-xs font-bold text-[#7d6ba8]">{copy.sub}</p>
+                <p className="mt-3 font-[Baloo_2] text-2xl font-extrabold text-[#5b4b86]">{revealText ? "Secret word" : copy.title}</p>
+                <p className="mt-1 text-xs font-bold text-[#7d6ba8]">
+                  {revealText ? revealText : copy.sub}
+                </p>
               </>
             ) : (
               <>
@@ -629,7 +633,9 @@ function RoleReveal({ room, self }: Shared) {
           </div>
         </motion.button>
         <div className="mt-4 flex gap-2">
-          <Badge tone="mint">{self?.secretWord ? `SECRET WORD · ${self.secretWord}` : "NO WORD FOR YOU"}</Badge>
+          <Badge tone={self?.role === "imposter" ? "pink" : "mint"}>
+            {self?.role === "imposter" ? "IMPOSTER" : self?.secretWord ? `SECRET WORD · ${self.secretWord}` : "NO WORD FOR YOU"}
+          </Badge>
           <Badge tone="lavender">ROUND {room.round}</Badge>
         </div>
         <p className="mt-3 text-[11px] font-extrabold text-[#b19ba9]">Continuing in {label}</p>
@@ -713,7 +719,7 @@ function CluePhase({ room, playerId, self }: Shared) {
 
 function Discussion({ room, self, playerId, selectedVote, setSelectedVote }: Shared) {
   const players: PublicPlayer[] = room.players;
-  const voting = room.phase === "voting";
+  const canVote = room.phase === "discussion" || room.phase === "voting";
   const { label } = useCountdown(room.timer?.endsAt);
   const submitted = Boolean(self?.vote);
   const target = players.find((x) => x.id === selectedVote);
@@ -721,7 +727,7 @@ function Discussion({ room, self, playerId, selectedVote, setSelectedVote }: Sha
     <div className="flex flex-1 flex-col">
       <div className="mb-3 flex items-center justify-between rounded-2xl bg-white px-4 py-3 shadow-[0_4px_0_#eee3e9]">
         <div>
-          <p className="text-[10px] font-extrabold uppercase tracking-[.16em] text-[#a58da2]">Round {room.round} · {voting ? "voting" : "discussion"}</p>
+          <p className="text-[10px] font-extrabold uppercase tracking-[.16em] text-[#a58da2]">Round {room.round} · {canVote ? "discussion" : "discussion"}</p>
           <p className="font-[Baloo_2] text-xl font-extrabold text-[#493e58]">{label}</p>
         </div>
         <Badge tone="mint"><Wifi size={10} /> {room.voted.length}/{players.filter((x: PublicPlayer) => x.connected).length} VOTED</Badge>
@@ -731,7 +737,7 @@ function Discussion({ room, self, playerId, selectedVote, setSelectedVote }: Sha
           const picked = selectedVote === player.id;
           const isSelf = player.id === playerId;
           return (
-            <button key={player.id} disabled={!voting || submitted || isSelf || !player.connected}
+            <button key={player.id} disabled={!canVote || submitted || isSelf || !player.connected}
               onClick={() => setSelectedVote(player.id)}
               className={`relative grid place-items-center rounded-2xl p-2 transition ${picked ? "bg-[#fff2cd] shadow-[0_4px_0_#f0dfae]" : "bg-white shadow-[0_3px_0_#f1e6ed]"} ${player.connected ? "" : "opacity-45 grayscale"} ${isSelf ? "opacity-70" : ""}`}>
               <Bean player={beanFor(player)} size="sm" />
@@ -744,9 +750,9 @@ function Discussion({ room, self, playerId, selectedVote, setSelectedVote }: Sha
         })}
       </div>
       <div className="mt-3 space-y-2">
-        <Button disabled={!selectedVote || submitted} onClick={() => selectedVote && actions.vote(selectedVote)}
+        <Button disabled={!canVote || !selectedVote || submitted} onClick={() => selectedVote && actions.vote(selectedVote)}
           icon={submitted ? Check : Vote} variant={submitted ? "soft" : "primary"}>
-          {submitted ? "✔ Voted" : target ? `Vote for ${target.nickname}` : "Pick a kitty"}
+          {submitted ? "✔ Voted" : canVote ? (target ? `Vote for ${target.nickname}` : "Pick a kitty") : "Voting is locked"}
         </Button>
       </div>
     </div>
