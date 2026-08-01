@@ -8,6 +8,28 @@ const serverEntry = path.join(__dirname, '.output', 'server', 'index.mjs');
 const publicDir = path.join(__dirname, '.output', 'public');
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || '0.0.0.0';
+
+const getRequestBase = (req) => {
+  const hostHeader = Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host;
+  return `http://${hostHeader || 'localhost'}`;
+};
+
+const createSafeUrl = (value, base) => {
+  try {
+    return new URL(value || '/', base);
+  } catch {
+    return new URL('/', base);
+  }
+};
+
+const getSafePathname = (url) => {
+  try {
+    return decodeURIComponent(url.pathname).replace(/^\/+/, '');
+  } catch {
+    return url.pathname.replace(/^\/+/, '');
+  }
+};
+
 const clientBundle = (() => {
   if (!existsSync(path.join(publicDir, 'assets'))) return '/assets/index.js';
   const candidates = readdirSync(path.join(publicDir, 'assets'))
@@ -28,8 +50,8 @@ const handler = typeof app?.fetch === 'function' ? app.fetch.bind(app) : null;
 
 const assetHandler = {
   async fetch(request) {
-    const url = new URL(request.url);
-    const safePath = decodeURIComponent(url.pathname).replace(/^\/+/, '');
+    const url = createSafeUrl(request.url, 'http://localhost');
+    const safePath = getSafePathname(url);
     const filePath = path.join(publicDir, safePath || 'index.html');
     const normalized = path.normalize(filePath);
 
@@ -80,7 +102,7 @@ if (!handler) {
 
 const server = createServer(async (req, res) => {
   try {
-    const requestUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+    const requestUrl = createSafeUrl(req.url || '/', getRequestBase(req));
 
     if (requestUrl.pathname.includes('tanstack-start-dev-client-entry')) {
       res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8' });
