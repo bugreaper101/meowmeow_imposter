@@ -35,6 +35,7 @@ export type PublicPlayer = {
   speaker: boolean;
   speaking: boolean;
   eliminated: boolean;
+  roleSeen: boolean;
 };
 
 export type RoundResult = {

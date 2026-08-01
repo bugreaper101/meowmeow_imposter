@@ -37,6 +37,8 @@ type HostRoom = {
   finished: boolean;
   settings: RoomSettings;
   writerId: string | null;
+  writerQueue: string[];
+  lastWriterId: string | null;
   speakingOrder: string[];
   currentSpeakerId: string | null;
   timer: RoomState["timer"];
@@ -65,6 +67,7 @@ let currentAvatar: string | null = null;
 let currentToken: string | null = null;
 let localRoom: HostRoom | null = null;
 let peerConnections = new Map<string, DataConnection>();
+let autoAdvanceTimer: ReturnType<typeof setInterval> | null = null;
 
 function flushQueuedMessages() {
   if (!hostConnection || !hostConnection.open) return;
@@ -108,6 +111,8 @@ function createDefaultRoom(code: string): HostRoom {
       writerMode: "sequential",
     },
     writerId: null,
+    writerQueue: [],
+    lastWriterId: null,
     speakingOrder: [],
     currentSpeakerId: null,
     timer: null,
@@ -155,6 +160,7 @@ function buildPublicRoom(room: HostRoom): RoomState {
       speaker: player.speaker,
       speaking: player.speaking,
       eliminated: player.eliminated,
+      roleSeen: player.roleSeen,
     })),
   };
 }
@@ -175,6 +181,90 @@ function buildPrivateState(room: HostRoom, playerId: string): PrivateState {
     ready: player.ready,
     vote: player.vote,
   };
+}
+
+function shuffle<T>(items: T[]): T[] {
+  const result = [...items];
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [result[index], result[swapIndex]] = [result[swapIndex], result[index]];
+  }
+  return result;
+}
+
+function getConnectedPlayers(room: HostRoom): PlayerRecord[] {
+  return room.players.filter((entry) => entry.connected);
+}
+
+function getOrderedPlayers(room: HostRoom): PlayerRecord[] {
+  return [...getConnectedPlayers(room)].sort((a, b) => a.joinedAt - b.joinedAt || a.nickname.localeCompare(b.nickname));
+}
+
+function buildWriterOrder(room: HostRoom, connectedPlayers: PlayerRecord[]): string[] {
+  const orderedIds = connectedPlayers.map((player) => player.id);
+  if (room.settings.writerMode === "random") {
+    return shuffle(orderedIds);
+  }
+  if (room.lastWriterId) {
+    const index = orderedIds.indexOf(room.lastWriterId);
+    if (index >= 0) {
+      return [...orderedIds.slice(index + 1), ...orderedIds.slice(0, index + 1)];
+    }
+  }
+  return orderedIds;
+}
+
+function buildClueOrder(room: HostRoom, connectedPlayers: PlayerRecord[]): string[] {
+  const orderedIds = connectedPlayers.map((player) => player.id);
+  if (room.settings.writerMode === "random") {
+    return shuffle(orderedIds);
+  }
+  return orderedIds;
+}
+
+function assignRoles(room: HostRoom, writerId: string | null) {
+  const connectedPlayers = getConnectedPlayers(room);
+  const eligibleIds = connectedPlayers.filter((player) => player.id !== writerId).map((player) => player.id);
+  const count = Math.max(0, Math.min(room.settings.imposters, eligibleIds.length));
+  const imposterIds = shuffle(eligibleIds).slice(0, count);
+  room.players.forEach((player) => {
+    if (player.id === writerId) player.role = "writer";
+    else if (imposterIds.includes(player.id)) player.role = "imposter";
+    else player.role = "player";
+  });
+}
+
+function setRoomTimer(room: HostRoom, phase: RoomState["phase"], seconds: number | null) {
+  room.timer = seconds && seconds > 0
+    ? { phase, endsAt: Date.now() + seconds * 1000, duration: seconds }
+    : { phase, endsAt: null, duration: seconds ?? 0 };
+}
+
+function finalizeDiscussion(room: HostRoom) {
+  if (room.phase !== "discussion") return;
+  const connectedPlayers = getConnectedPlayers(room);
+  const counts: Record<string, number> = {};
+  for (const player of connectedPlayers) {
+    if (!player.vote) continue;
+    counts[player.vote] = (counts[player.vote] ?? 0) + 1;
+  }
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  const topEntry = entries[0];
+  const topCount = topEntry?.[1] ?? 0;
+  const tied = entries.length > 1 && entries[1]?.[1] === topCount;
+  const eliminated = topEntry ? room.players.find((player) => player.id === topEntry[0]) ?? null : null;
+  room.phase = "result";
+  room.voted = connectedPlayers.filter((player) => player.vote).map((player) => player.id);
+  room.result = {
+    eliminatedId: tied || !topEntry ? null : eliminated?.id ?? null,
+    eliminatedRole: tied || !topEntry ? null : eliminated?.role ?? null,
+    tie: Boolean(tied),
+    counts,
+    winner: eliminated?.role === "imposter" ? "innocents" : "imposters",
+    secretWord: room.secretWord,
+    points: 20,
+  };
+  room.timer = { phase: "result", endsAt: null, duration: 0 };
 }
 
 function publishRoom(room: HostRoom, fromPeerId?: string) {
@@ -218,7 +308,26 @@ function broadcastToClients(msg: ServerMessage) {
   }
 }
 
+function clearAutoAdvanceTimer() {
+  if (autoAdvanceTimer) {
+    clearInterval(autoAdvanceTimer);
+    autoAdvanceTimer = null;
+  }
+}
+
+function startAutoAdvanceTimer() {
+  if (autoAdvanceTimer || mode !== "host" || !localRoom) return;
+  autoAdvanceTimer = setInterval(() => {
+    if (!localRoom || mode !== "host") return;
+    if (localRoom.phase === "discussion" && localRoom.timer?.endsAt && Date.now() >= localRoom.timer.endsAt) {
+      finalizeDiscussion(localRoom);
+      publishStateToAll();
+    }
+  }, 250);
+}
+
 function resetRoomState() {
+  clearAutoAdvanceTimer();
   localRoom = null;
   currentRoomCode = null;
   currentHostPeerId = null;
@@ -359,15 +468,17 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
       case "startGame":
         if (player.id !== localRoom.hostId) return;
         if (localRoom.phase !== "lobby") return;
-        const connectedPlayers = localRoom.players.filter((entry) => entry.connected);
+        const connectedPlayers = getOrderedPlayers(localRoom);
         if (connectedPlayers.length < 3) return;
         if (connectedPlayers.some((entry) => !entry.avatar)) return;
         if (localRoom.settings.imposters >= connectedPlayers.length - 1) return;
         localRoom.locked = true;
         localRoom.phase = "writer";
-        localRoom.writerId = connectedPlayers[0]?.id ?? null;
+        localRoom.writerQueue = buildWriterOrder(localRoom, connectedPlayers);
+        localRoom.writerId = localRoom.writerQueue.shift() ?? null;
         localRoom.currentSpeakerId = null;
         localRoom.takenAvatars = [...new Set(localRoom.players.map((entry) => entry.avatar).filter(Boolean) as string[])];
+        localRoom.speakingOrder = [];
         localRoom.players.forEach((entry) => {
           entry.ready = false;
           entry.roleSeen = false;
@@ -381,15 +492,24 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
       case "submitWord":
         if (localRoom.phase !== "writer" || player.id !== localRoom.writerId) return;
         localRoom.secretWord = String(msg["word"] || "");
+        localRoom.lastWriterId = localRoom.writerId;
+        assignRoles(localRoom, localRoom.writerId);
+        localRoom.speakingOrder = buildClueOrder(localRoom, getOrderedPlayers(localRoom));
         localRoom.phase = "roleReveal";
+        setRoomTimer(localRoom, "roleReveal", null);
         publishStateToAll();
         break;
       case "roleSeen":
         if (localRoom.phase !== "roleReveal") return;
         player.roleSeen = true;
-        if (localRoom.players.every((entry) => entry.roleSeen || !entry.connected)) {
-          localRoom.phase = "ready";
-        }
+        publishStateToAll();
+        break;
+      case "continueToClue":
+        if (localRoom.phase !== "roleReveal") return;
+        if (!localRoom.players.every((entry) => entry.roleSeen || !entry.connected)) return;
+        localRoom.phase = "clue";
+        localRoom.currentSpeakerId = localRoom.speakingOrder[0] ?? getOrderedPlayers(localRoom)[0]?.id ?? null;
+        setRoomTimer(localRoom, "clue", localRoom.settings.clueSeconds);
         publishStateToAll();
         break;
       case "ready":
@@ -398,31 +518,32 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
         if (localRoom.players.every((entry) => entry.ready || !entry.connected)) {
           localRoom.phase = "clue";
           localRoom.currentSpeakerId = localRoom.speakingOrder[0] ?? localRoom.players.find((entry) => entry.connected)?.id ?? null;
+          setRoomTimer(localRoom, "clue", localRoom.settings.clueSeconds);
         }
         publishStateToAll();
         break;
       case "finishTurn":
       case "skipTurn":
         if (localRoom.phase === "clue") {
-          localRoom.phase = "discussion";
-        }
-        publishStateToAll();
-        break;
-      case "skipDiscussion":
-        if (localRoom.phase === "discussion") {
-          localRoom.phase = "voting";
+          const currentIndex = localRoom.speakingOrder.indexOf(localRoom.currentSpeakerId ?? "");
+          const nextIndex = currentIndex + 1;
+          if (nextIndex < localRoom.speakingOrder.length) {
+            localRoom.currentSpeakerId = localRoom.speakingOrder[nextIndex] ?? null;
+            setRoomTimer(localRoom, "clue", localRoom.settings.clueSeconds);
+          } else {
+            localRoom.currentSpeakerId = null;
+            localRoom.phase = "discussion";
+            setRoomTimer(localRoom, "discussion", localRoom.settings.discussionSeconds);
+            startAutoAdvanceTimer();
+          }
         }
         publishStateToAll();
         break;
       case "vote":
-        if (localRoom.phase !== "voting") return;
+        if (localRoom.phase !== "discussion" && localRoom.phase !== "voting") return;
         player.vote = String(msg["targetId"] || "");
         player.voted = true;
         localRoom.voted = localRoom.players.filter((entry) => entry.voted && entry.connected).map((entry) => entry.id);
-        if (localRoom.voted.length === localRoom.players.filter((entry) => entry.connected).length) {
-          localRoom.phase = "result";
-          localRoom.result = { eliminatedId: null, eliminatedRole: null, tie: false, counts: {}, winner: "innocents", secretWord: localRoom.secretWord, points: 20 };
-        }
         publishStateToAll();
         break;
       case "continueResult":
@@ -445,12 +566,15 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
         break;
       case "playAgain":
         if (player.id !== localRoom.hostId) return;
+        clearAutoAdvanceTimer();
         localRoom.phase = "lobby";
         localRoom.round = 0;
         localRoom.result = null;
         localRoom.revealedWord = null;
         localRoom.secretWord = null;
         localRoom.writerId = null;
+        localRoom.writerQueue = [];
+        localRoom.lastWriterId = null;
         localRoom.currentSpeakerId = null;
         localRoom.voted = [];
         localRoom.players.forEach((entry) => {
@@ -736,6 +860,7 @@ export const actions = {
   startGame: () => send({ t: "startGame" }),
   submitWord: (word: string) => send({ t: "submitWord", word }),
   roleSeen: () => send({ t: "roleSeen" }),
+  continueToClue: () => send({ t: "continueToClue" }),
   ready: () => send({ t: "ready" }),
   finishTurn: () => send({ t: "finishTurn" }),
   skipTurn: () => send({ t: "skipTurn" }),

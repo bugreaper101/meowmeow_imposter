@@ -588,19 +588,29 @@ function Waiting({ room }: Shared) {
 
 function RoleReveal({ room, self }: Shared) {
   const [flipped, setFlipped] = useState(false);
+  const [ready, setReady] = useState(false);
   const { label } = useCountdown(room.timer?.endsAt);
-  useEffect(() => { setFlipped(false); }, [room.round]);
+  useEffect(() => { setFlipped(false); setReady(false); }, [room.round]);
   const role = self?.role;
   const copy = role === "imposter"
     ? { emoji: "🐱‍👤", title: "You are the Imposter", sub: "Blend in. Guess the word. Don’t get caught." }
     : role === "writer"
       ? { emoji: "✎", title: "You are the Writer", sub: "You chose the word — give fair clues." }
-      : { emoji: "🐾", title: "You are Innocent", sub: "Give a clue that only true kitties would know." };
+      : { emoji: "🐾", title: "You are a Kitty", sub: "Use the secret word to give a clue." };
+  const reveal = () => {
+    if (ready) {
+      actions.continueToClue();
+      return;
+    }
+    setFlipped(true);
+    setReady(true);
+    actions.roleSeen();
+  };
   return (
     <div className="flex flex-1 flex-col">
       <Top title="Your role" sub="Tap the card to reveal it. Keep it secret!" />
       <div className="my-auto grid place-items-center">
-        <motion.button onClick={() => { setFlipped(true); actions.roleSeen(); }} animate={{ rotateY: flipped ? 180 : 0 }} transition={{ duration: 0.6 }}
+        <motion.button onClick={reveal} animate={{ rotateY: flipped ? 180 : 0 }} transition={{ duration: 0.6 }}
           className={`grid h-64 w-56 place-items-center rounded-[32px] border-4 border-white text-center shadow-[0_12px_0_rgba(116,78,115,.15)] ${flipped ? "bg-[#e9e3fb]" : "bg-[#f6b2c8]"}`}>
           <div style={{ transform: flipped ? "rotateY(180deg)" : undefined }} className="px-5">
             {flipped ? (
@@ -624,8 +634,8 @@ function RoleReveal({ room, self }: Shared) {
         </div>
         <p className="mt-3 text-[11px] font-extrabold text-[#b19ba9]">Continuing in {label}</p>
       </div>
-      <Button variant={flipped ? "soft" : "primary"} onClick={() => { setFlipped(true); actions.roleSeen(); }} icon={flipped ? Check : ArrowRight}>
-        {flipped ? "Got it" : "Reveal my role"}
+      <Button variant={ready ? "soft" : "primary"} onClick={reveal} icon={ready ? Check : ArrowRight}>
+        {ready ? "Next" : "Reveal my role"}
       </Button>
     </div>
   );
@@ -734,16 +744,10 @@ function Discussion({ room, self, playerId, selectedVote, setSelectedVote }: Sha
         })}
       </div>
       <div className="mt-3 space-y-2">
-        {voting ? (
-          <Button disabled={!selectedVote || submitted} onClick={() => selectedVote && actions.vote(selectedVote)}
-            icon={submitted ? Check : Vote} variant={submitted ? "soft" : "primary"}>
-            {submitted ? "✔ Voted" : target ? `Vote for ${target.nickname}` : "Pick a kitty"}
-          </Button>
-        ) : self?.isHost ? (
-          <Button onClick={() => actions.skipDiscussion()} icon={ArrowRight}>Go to voting</Button>
-        ) : (
-          <Button variant="soft" disabled icon={Users}>Talk it out with the group…</Button>
-        )}
+        <Button disabled={!selectedVote || submitted} onClick={() => selectedVote && actions.vote(selectedVote)}
+          icon={submitted ? Check : Vote} variant={submitted ? "soft" : "primary"}>
+          {submitted ? "✔ Voted" : target ? `Vote for ${target.nickname}` : "Pick a kitty"}
+        </Button>
       </div>
     </div>
   );
