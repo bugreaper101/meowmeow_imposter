@@ -129,12 +129,23 @@ export function SlideConfirm({ label, done, onDone }: { label: string; done: boo
     }
   };
 
+  const handleConfirm = (event?: React.PointerEvent | React.MouseEvent | React.KeyboardEvent) => {
+    event?.preventDefault();
+    if (!done) complete(maxX);
+  };
+
   return (
     <motion.div
+      role="button"
+      tabIndex={0}
       className="relative flex h-14 w-full items-center overflow-hidden rounded-2xl bg-[#fdeaf1] px-2 shadow-[0_5px_0_#f1d3e0]"
-      onClick={() => {
-        if (!done) complete(maxX);
-      }}>
+      onClick={handleConfirm}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          handleConfirm(event);
+        }
+      }}
+    >
       <motion.span
         drag="x"
         dragConstraints={{ left: 0, right: maxX }}
@@ -148,9 +159,13 @@ export function SlideConfirm({ label, done, onDone }: { label: string; done: boo
         onDragEnd={(_, info) => {
           complete(info.offset.x);
         }}
+        onPointerDown={() => {
+          if (!done) setDragX(0);
+        }}
         onTap={() => {
           if (!done) complete(maxX);
         }}
+        onClick={(event) => event.stopPropagation()}
         className="absolute z-10 grid size-10 place-items-center rounded-xl bg-[#ef6d9a] text-white shadow-[0_3px_0_#cf547e]">🐾</motion.span>
       <span className="w-full text-center font-extrabold text-[#b04f73]">{done ? "Confirmed! ✨" : label}</span>
     </motion.div>
