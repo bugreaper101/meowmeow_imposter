@@ -216,10 +216,10 @@ export default function MeowMeowImposter() {
   const connectionTone = status === "online" ? "mint" : status === "reconnecting" ? "cream" : "grey";
 
   return (
-    <main className="min-h-screen bg-[#f5eef4] p-3 font-[Nunito] text-foreground sm:p-8">
-      <div className="relative mx-auto flex min-h-[780px] w-full max-w-[430px] flex-col overflow-hidden rounded-[36px] border-[7px] border-white bg-[#fffaf8] shadow-[0_22px_70px_rgba(116,78,115,.18)]">
+    <main className="min-h-screen bg-[#f5eef4] font-[Nunito] text-foreground">
+      <div className="relative flex min-h-screen w-full flex-col overflow-hidden bg-[#fffaf8]">
         <Sky />
-        <div className="relative flex items-center justify-between px-7 py-4">
+        <div className="relative flex items-center justify-between px-4 py-3 sm:px-7 sm:py-4">
           <span className="font-mono text-[10px] font-bold tracking-widest text-[#887a8d]">
             {room ? `#${room.code}` : "meow"}
           </span>
@@ -230,7 +230,7 @@ export default function MeowMeowImposter() {
             <Badge tone={connectionTone as "mint"}>{status.toUpperCase()}</Badge>
           )}
         </div>
-        <motion.div key={screen} initial={{ opacity: 0, y: 18, scale: 0.985 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ type: "spring", stiffness: 260, damping: 24 }} className="relative flex flex-1 flex-col px-6 pb-6">
+        <motion.div key={screen} initial={{ opacity: 0, y: 18, scale: 0.985 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ type: "spring", stiffness: 260, damping: 24 }} className="relative flex flex-1 flex-col px-4 pb-4 sm:px-6 sm:pb-6">
           {content}
         </motion.div>
         {toast && <Toast text={toast} />}
@@ -240,7 +240,7 @@ export default function MeowMeowImposter() {
         <Dialog open={dialog === "full"} emoji="🙀" title="This room is full" body="Oops! Every cushion is taken. Try another room code or make your own room." primary="Try again" onClose={() => setDialog(null)} />
         <Dialog open={dialog === "notFound"} emoji="🐾" title="Found no kitty room" body="That room code doesn’t seem to be open right meow. Double-check the code and try again." primary="Try again" onClose={() => setDialog(null)} />
         <Dialog open={dialog === "lost"} emoji="📶" title="Connection lost" body="We lost the yarn thread! Reconnecting you to the room right meow." primary="Keep trying" onClose={() => setDialog(null)} />
-        <div className="relative flex items-center justify-between px-7 pb-5">
+        <div className="relative flex items-center justify-between px-4 pb-4 sm:px-7 sm:pb-5">
           <span className="text-[10px] font-extrabold uppercase tracking-[.16em] text-[#b19ba9]">
             {room ? `Round ${room.round} / ${room.maxRounds}` : "MeowMeow Imposter"}
           </span>
