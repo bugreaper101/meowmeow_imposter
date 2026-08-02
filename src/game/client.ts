@@ -268,6 +268,44 @@ function advanceClueTurn(room: HostRoom) {
   startAutoAdvanceTimer();
 }
 
+function applyRoundScores(players: Array<{ id: string; role: Role; connected: boolean; vote: string | null; roundScore: number; score: number }>, imposterIds: string[], eliminatedId: string | null, tie: boolean, everyoneVotedImposter: boolean) {
+  const eliminatedIsImposter = Boolean(eliminatedId && imposterIds.includes(eliminatedId));
+  const majorityAgainstImposter = Boolean(eliminatedId && eliminatedIsImposter && !tie);
+  const imposterSurvives = !majorityAgainstImposter;
+
+  players.forEach((player) => {
+    let roundScore = 0;
+    const isImposter = imposterIds.includes(player.id);
+    const votedImposter = Boolean(player.vote && imposterIds.includes(player.vote));
+    const votedOthers = Boolean(player.vote && !imposterIds.includes(player.vote));
+
+    if (!player.connected) {
+      player.roundScore = 0;
+      return;
+    }
+
+    if (majorityAgainstImposter) {
+      if (everyoneVotedImposter) {
+        if (isImposter) roundScore -= 40;
+        else roundScore += 40;
+      } else {
+        if (isImposter) roundScore -= 20;
+        else if (votedImposter) roundScore += 20;
+        else if (votedOthers) roundScore -= 10;
+      }
+    } else if (imposterSurvives) {
+      if (isImposter) roundScore += 50;
+      else if (votedImposter) roundScore += 10;
+      else if (votedOthers || !player.vote) roundScore -= 10;
+    }
+
+    player.roundScore = roundScore;
+    player.score += roundScore;
+  });
+}
+
+export { applyRoundScores };
+
 function finalizeDiscussion(room: HostRoom) {
   if (room.phase !== "discussion") return;
   const connectedPlayers = getConnectedPlayers(room);
@@ -283,19 +321,16 @@ function finalizeDiscussion(room: HostRoom) {
   const topCount = topEntry?.[1] ?? 0;
   const tied = entries.length > 1 && entries[1]?.[1] === topCount;
   const eliminated = topEntry ? room.players.find((player) => player.id === topEntry[0]) ?? null : null;
-  const caughtImposter = Boolean(eliminated && eliminated.role === "imposter");
-  room.players.forEach((player) => {
-    let roundScore = 0;
-    if (player.connected && !player.vote) roundScore -= 10;
-    if (caughtImposter) {
-      if (player.role === "imposter") roundScore -= 20;
-      else roundScore += 20;
-    } else {
-      if (player.role === "imposter") roundScore += 20;
-    }
-    player.roundScore = roundScore;
-    player.score += roundScore;
-  });
+  const imposterIds = room.players.filter((player) => player.role === "imposter").map((player) => player.id);
+  const everyoneVotedImposter = Boolean(connectedPlayers.length > 0 && connectedPlayers.every((player) => player.vote && imposterIds.includes(player.vote)));
+  const majorityAgainstImposter = Boolean(eliminated && eliminated.role === "imposter" && !tied);
+  applyRoundScores(
+    room.players as Array<{ id: string; role: Role; connected: boolean; vote: string | null; roundScore: number; score: number }>,
+    imposterIds,
+    tied || !topEntry ? null : eliminated?.id ?? null,
+    Boolean(tied),
+    everyoneVotedImposter,
+  );
   const roles: Record<string, Role> = {};
   for (const player of room.players) {
     roles[player.id] = player.role;
@@ -309,9 +344,9 @@ function finalizeDiscussion(room: HostRoom) {
     counts,
     votes,
     roles,
-    winner: caughtImposter ? "innocents" : "imposters",
+    winner: majorityAgainstImposter ? "innocents" : "imposters",
     secretWord: room.secretWord,
-    points: 20,
+    points: everyoneVotedImposter ? 40 : majorityAgainstImposter ? 20 : 50,
   };
   room.timer = { phase: "result", endsAt: null, duration: 0 };
 }
