@@ -565,10 +565,6 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
       case "roleSeen":
         if (localRoom.phase !== "roleReveal") return;
         player.roleSeen = true;
-        if (localRoom.players.every((entry) => entry.roleSeen || !entry.connected)) {
-          localRoom.phase = "ready";
-          localRoom.players.forEach((entry) => { if (!entry.ready) entry.ready = false; });
-        }
         publishStateToAll();
         break;
       case "continueToClue":
@@ -578,7 +574,8 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
         publishStateToAll();
         break;
       case "ready":
-        if (localRoom.phase !== "ready") return;
+        if (localRoom.phase !== "roleReveal" && localRoom.phase !== "ready") return;
+        if (localRoom.phase === "roleReveal" && !localRoom.players.every((entry) => entry.roleSeen || !entry.connected)) return;
         player.ready = true;
         if (localRoom.players.every((entry) => entry.ready || !entry.connected)) {
           localRoom.phase = "clue";

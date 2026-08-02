@@ -592,11 +592,12 @@ function Waiting({ room }: Shared) {
   );
 }
 
-function RoleReveal({ room, self }: Shared) {
+export function RoleReveal({ room, self }: Shared) {
   const [flipped, setFlipped] = useState(false);
-  const [ready, setReady] = useState(false);
   const { label } = useCountdown(room.timer?.endsAt);
-  useEffect(() => { setFlipped(false); setReady(false); }, [room.round]);
+  useEffect(() => {
+    setFlipped(Boolean(self?.roleSeen));
+  }, [self?.roleSeen, room.round]);
   const role = self?.role;
   const isImposter = role === "imposter";
   const copy = isImposter
@@ -605,11 +606,15 @@ function RoleReveal({ room, self }: Shared) {
       ? { emoji: "✎", title: "You are the Writer", sub: "You chose the word — give fair clues." }
       : { emoji: "🐾", title: "You are a Kitty", sub: "Use the secret word to give a clue." };
   const revealText = isImposter ? null : self?.secretWord ?? null;
+  const revealed = flipped || Boolean(self?.roleSeen);
   const reveal = () => {
-    if (ready) return;
-    setFlipped(true);
-    setReady(true);
-    actions.roleSeen();
+    if (revealed && self?.ready) return;
+    if (!revealed) {
+      setFlipped(true);
+      actions.roleSeen();
+      return;
+    }
+    actions.ready();
   };
   return (
     <div className="flex flex-1 flex-col">
@@ -643,8 +648,8 @@ function RoleReveal({ room, self }: Shared) {
         </div>
         <p className="mt-3 text-[11px] font-extrabold text-[#b19ba9]">Continuing in {label}</p>
       </div>
-      <Button variant={ready ? "soft" : "primary"} onClick={reveal} icon={ready ? Check : ArrowRight}>
-        {ready ? "Ready" : "Reveal my role"}
+      <Button variant={revealed ? "soft" : "primary"} onClick={reveal} icon={revealed ? Check : ArrowRight}>
+        {revealed ? (self?.ready ? "You’re ready!" : "Are you ready?") : "Reveal my role"}
       </Button>
     </div>
   );
