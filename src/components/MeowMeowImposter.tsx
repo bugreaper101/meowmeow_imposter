@@ -339,7 +339,6 @@ function Welcome({ go, setMode }: Shared) {
         <Button variant="soft" onClick={() => { setMode("join"); go("Join Room"); }} icon={Users}>Join room</Button>
         <div className="flex gap-2">
           <Button variant="ghost" onClick={() => go("About")} icon={Info}>About</Button>
-          <Button variant="ghost" onClick={() => { setMode("create"); go("Host Settings"); }} icon={Settings2}>Settings</Button>
         </div>
         <p className="text-center text-[10px] font-extrabold text-[#b19ba9]">English (US) · v1.0.0</p>
       </div>
