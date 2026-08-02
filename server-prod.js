@@ -110,6 +110,30 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (requestUrl.pathname.startsWith('/assets/') || requestUrl.pathname === '/favicon.ico' || requestUrl.pathname === '/robots.txt') {
+      const response = await assetHandler.fetch(new Request(requestUrl, {
+        method: req.method || 'GET',
+        headers: req.headers,
+      }));
+      const headers = Object.fromEntries(response.headers.entries());
+      res.writeHead(response.status, headers);
+      if (response.body) {
+        const reader = response.body.getReader();
+        const pump = async () => {
+          let chunk = await reader.read();
+          while (!chunk.done) {
+            res.write(Buffer.from(chunk.value));
+            chunk = await reader.read();
+          }
+          res.end();
+        };
+        await pump();
+      } else {
+        res.end();
+      }
+      return;
+    }
+
     const method = req.method || 'GET';
     const requestBody = method !== 'GET' && method !== 'HEAD' ? await new Promise((resolve, reject) => {
       const chunks = [];

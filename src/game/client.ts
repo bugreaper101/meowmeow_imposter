@@ -24,6 +24,7 @@ type PlayerRecord = {
   role: Role;
   roleSeen: boolean;
   vote: string | null;
+  viewing: "result" | "scoreboard" | null;
   joinedAt: number;
 };
 
@@ -168,18 +169,21 @@ function buildPublicRoom(room: HostRoom): RoomState {
 function buildPrivateState(room: HostRoom, playerId: string): PrivateState {
   const player = room.players.find((entry) => entry.id === playerId);
   if (!player) {
-    return { playerId, role: null, secretWord: null, isWriter: false, isHost: false, roleSeen: false, ready: false, vote: null };
+    return { playerId, role: null, secretWord: null, isWriter: false, isHost: false, roleSeen: false, ready: false, vote: null, viewing: null };
   }
-  const canSeeWord = player.role === "player" || player.role === "writer";
+  const isWriter = room.writerId === player.id;
+  const revealed = player.roleSeen || room.phase === "writer";
+  const canSeeWord = isWriter || (revealed && player.role === "player");
   return {
     playerId,
-    role: player.role,
+    role: isWriter || revealed ? player.role : null,
     secretWord: canSeeWord ? room.secretWord : null,
-    isWriter: room.writerId === player.id,
+    isWriter,
     isHost: room.hostId === player.id,
     roleSeen: player.roleSeen,
     ready: player.ready,
     vote: player.vote,
+    viewing: player.viewing,
   };
 }
 
@@ -204,16 +208,16 @@ function getOrderedPlayers(room: HostRoom): PlayerRecord[] {
 
 function buildWriterOrder(room: HostRoom, connectedPlayers: PlayerRecord[]): string[] {
   const orderedIds = connectedPlayers.map((player) => player.id);
+  if (!orderedIds.length) return [];
+
   if (room.settings.writerMode === "random") {
     return shuffle(orderedIds);
   }
-  if (room.lastWriterId) {
-    const index = orderedIds.indexOf(room.lastWriterId);
-    if (index >= 0) {
-      return [...orderedIds.slice(index + 1), ...orderedIds.slice(0, index + 1)];
-    }
-  }
-  return orderedIds;
+
+  if (!room.lastWriterId) return orderedIds;
+  const lastIndex = orderedIds.indexOf(room.lastWriterId);
+  if (lastIndex === -1) return orderedIds;
+  return [...orderedIds.slice(lastIndex + 1), ...orderedIds.slice(0, lastIndex + 1)];
 }
 
 function buildClueOrder(room: HostRoom, connectedPlayers: PlayerRecord[]): string[] {
@@ -246,6 +250,7 @@ function startCluePhase(room: HostRoom) {
   room.phase = "clue";
   room.currentSpeakerId = room.speakingOrder[0] ?? getOrderedPlayers(room)[0]?.id ?? null;
   setRoomTimer(room, "clue", room.settings.clueSeconds);
+  startAutoAdvanceTimer();
 }
 
 function advanceClueTurn(room: HostRoom) {
@@ -267,7 +272,9 @@ function finalizeDiscussion(room: HostRoom) {
   if (room.phase !== "discussion") return;
   const connectedPlayers = getConnectedPlayers(room);
   const counts: Record<string, number> = {};
+  const votes: Record<string, string | null> = {};
   for (const player of connectedPlayers) {
+    votes[player.id] = player.vote ?? null;
     if (!player.vote) continue;
     counts[player.vote] = (counts[player.vote] ?? 0) + 1;
   }
@@ -276,6 +283,23 @@ function finalizeDiscussion(room: HostRoom) {
   const topCount = topEntry?.[1] ?? 0;
   const tied = entries.length > 1 && entries[1]?.[1] === topCount;
   const eliminated = topEntry ? room.players.find((player) => player.id === topEntry[0]) ?? null : null;
+  const caughtImposter = Boolean(eliminated && eliminated.role === "imposter");
+  room.players.forEach((player) => {
+    let roundScore = 0;
+    if (player.connected && !player.vote) roundScore -= 10;
+    if (caughtImposter) {
+      if (player.role === "imposter") roundScore -= 20;
+      else roundScore += 20;
+    } else {
+      if (player.role === "imposter") roundScore += 20;
+    }
+    player.roundScore = roundScore;
+    player.score += roundScore;
+  });
+  const roles: Record<string, Role> = {};
+  for (const player of room.players) {
+    roles[player.id] = player.role;
+  }
   room.phase = "result";
   room.voted = connectedPlayers.filter((player) => player.vote).map((player) => player.id);
   room.result = {
@@ -283,7 +307,9 @@ function finalizeDiscussion(room: HostRoom) {
     eliminatedRole: tied || !topEntry ? null : eliminated?.role ?? null,
     tie: Boolean(tied),
     counts,
-    winner: eliminated?.role === "imposter" ? "innocents" : "imposters",
+    votes,
+    roles,
+    winner: caughtImposter ? "innocents" : "imposters",
     secretWord: room.secretWord,
     points: 20,
   };
@@ -445,6 +471,7 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
         role: null,
         roleSeen: false,
         vote: null,
+        viewing: null,
         joinedAt: Date.now(),
       };
       localRoom.players.push(player);
@@ -506,6 +533,7 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
         if (connectedPlayers.length < 3) return;
         if (connectedPlayers.some((entry) => !entry.avatar)) return;
         if (localRoom.settings.imposters >= connectedPlayers.length - 1) return;
+        localRoom.round = 1;
         localRoom.locked = true;
         localRoom.phase = "writer";
         localRoom.writerQueue = buildWriterOrder(localRoom, connectedPlayers);
@@ -520,6 +548,7 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
           entry.vote = null;
           entry.role = null;
           entry.eliminated = false;
+          entry.viewing = null;
         });
         publishStateToAll();
         break;
@@ -537,7 +566,8 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
         if (localRoom.phase !== "roleReveal") return;
         player.roleSeen = true;
         if (localRoom.players.every((entry) => entry.roleSeen || !entry.connected)) {
-          startCluePhase(localRoom);
+          localRoom.phase = "ready";
+          localRoom.players.forEach((entry) => { if (!entry.ready) entry.ready = false; });
         }
         publishStateToAll();
         break;
@@ -561,7 +591,8 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
       case "skipTurn":
         if (localRoom.phase === "clue") {
           advanceClueTurn(localRoom);
-          if (localRoom.phase === "discussion") {
+          const nextPhase = localRoom.phase as RoomState["phase"];
+          if (nextPhase === "discussion") {
             startAutoAdvanceTimer();
           }
         }
@@ -577,18 +608,55 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
         player.vote = targetId;
         player.voted = true;
         localRoom.voted = localRoom.players.filter((entry) => entry.voted && entry.connected).map((entry) => entry.id);
+        if (localRoom.players.filter((entry) => entry.connected).every((entry) => entry.voted)) {
+          finalizeDiscussion(localRoom);
+        }
         publishStateToAll();
         break;
       case "continueResult":
         if (localRoom.phase === "result") {
-          localRoom.phase = "scoreboard";
+          player.viewing = "scoreboard";
         }
+        publishStateToAll();
+        break;
+      case "viewing":
+        if (!(["result", "scoreboard", null] as const).includes(msg["viewing"] as any)) return;
+        player.viewing = msg["viewing"] as "result" | "scoreboard" | null;
         publishStateToAll();
         break;
       case "nextRound":
         if (player.id !== localRoom.hostId) return;
+        if (localRoom.round >= localRoom.maxRounds) {
+          localRoom.finished = true;
+          localRoom.phase = "winner";
+          localRoom.currentSpeakerId = null;
+          localRoom.locked = true;
+          publishStateToAll();
+          break;
+        }
         localRoom.round += 1;
-        localRoom.phase = "lobby";
+        const nextPlayers = getOrderedPlayers(localRoom);
+        localRoom.phase = "writer";
+        localRoom.currentSpeakerId = null;
+        localRoom.speakingOrder = [];
+        if (!localRoom.writerQueue.length) {
+          localRoom.writerQueue = buildWriterOrder(localRoom, nextPlayers);
+        }
+        localRoom.writerId = localRoom.writerQueue.shift() ?? null;
+        localRoom.secretWord = null;
+        localRoom.revealedWord = null;
+        localRoom.voted = [];
+        localRoom.result = null;
+        localRoom.players.forEach((entry) => {
+          entry.ready = false;
+          entry.roleSeen = false;
+          entry.voted = false;
+          entry.vote = null;
+          entry.role = null;
+          entry.eliminated = false;
+          entry.viewing = null;
+          entry.roundScore = 0;
+        });
         publishStateToAll();
         break;
       case "finishMatch":
@@ -825,6 +893,7 @@ export function send(msg: Outgoing) {
       role: null,
       roleSeen: false,
       vote: null,
+      viewing: null,
       joinedAt: Date.now(),
     });
     mode = "host";
@@ -911,6 +980,7 @@ export const actions = {
   finishMatch: () => send({ t: "finishMatch" }),
   playAgain: (keepScores = false) => send({ t: "playAgain", keepScores }),
   returnLobby: () => send({ t: "returnLobby" }),
+  viewing: (viewing: "result" | "scoreboard" | null) => send({ t: "viewing", viewing }),
   voiceState: (mic: boolean, speaker: boolean) => send({ t: "voiceState", mic, speaker }),
   rtc: (to: string, signal: unknown) => send({ t: "rtc", to, signal }),
   leaveRoom: () => {

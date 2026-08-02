@@ -147,7 +147,7 @@ export default function MeowMeowImposter() {
     if (room?.phase === "writer") setWriterText("");
   }, [room?.phase, room?.round]);
 
-  const screen = room ? screenForPhase(room, self?.isWriter ?? false) : stage;
+  const screen = room ? screenForPhase(room, self?.isWriter ?? false, self?.viewing ?? null) : stage;
   const inGame = Boolean(room) && room!.phase !== "lobby";
 
   const commitProfile = () => savePrefs({ nickname: nickname.trim(), avatar });
@@ -257,7 +257,13 @@ export default function MeowMeowImposter() {
 
 type Shared = Record<string, any>;
 
-function screenForPhase(room: RoomState, isWriter: boolean) {
+function screenForPhase(room: RoomState, isWriter: boolean, viewing: "result" | "scoreboard" | null) {
+  if ((room.phase === "result" || room.phase === "scoreboard") && viewing === "scoreboard") {
+    return "Scoreboard";
+  }
+  if ((room.phase === "result" || room.phase === "scoreboard") && viewing === "result") {
+    return "Round Result";
+  }
   switch (room.phase) {
     case "lobby": return "Lobby";
     case "writer": return isWriter ? "Writer Input" : "Waiting";
@@ -798,10 +804,30 @@ function RoundResult({ room, self }: Shared) {
             {result?.secretWord && <Badge tone="lavender">WORD · {result.secretWord}</Badge>}
           </div>
         </motion.div>
-        <p className="text-3xl">🎉 🐾 ✨</p>
+        <div className="grid w-full gap-3 text-left">
+          {players.map((player) => {
+            const voteFor = player.id && result?.votes[player.id] ? players.find((x) => x.id === result.votes[player.id]) : null;
+            const role = result?.roles[player.id];
+            return (
+              <div key={player.id} className="rounded-[24px] border border-[#f0e7f1] bg-[#faf6fe] p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-extrabold text-[#493e58]">{player.nickname}</span>
+                  <span className="text-[10px] font-bold uppercase tracking-[.2em] text-[#a58da2]">{role === "imposter" ? "Imposter" : role === "writer" ? "Writer" : "Kitty"}</span>
+                </div>
+                <p className="mt-1 text-sm text-[#7d6ba8]">Voted for {voteFor ? voteFor.nickname : "no one"}</p>
+                <div className="mt-2 flex flex-wrap gap-2 text-[10px] font-bold uppercase tracking-[.14em] text-[#9c81a2]">
+                  <span>{player.roundScore >= 0 ? "+" : ""}{player.roundScore} points</span>
+                  <span>{player.connected ? "Online" : "Offline"}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
         <p className="text-[11px] font-extrabold text-[#b19ba9]">Scoreboard in {label}</p>
       </div>
-      <Button onClick={() => actions.continueResult()} icon={ArrowRight} variant={self?.ready ? "soft" : "primary"}>Continue</Button>
+      <div className="space-y-2">
+        <Button onClick={() => actions.continueResult()} icon={ArrowRight}>View scoreboard</Button>
+      </div>
     </div>
   );
 }
@@ -827,6 +853,7 @@ function Scoreboard({ room, self }: Shared) {
         ))}
       </div>
       <div className="mt-3 space-y-2">
+        {room.phase === "result" && <Button variant="soft" onClick={() => actions.viewing("result")} icon={ArrowRight}>Back to round result</Button>}
         {self?.isHost ? (
           <>
             {!lastRound && <Button onClick={() => actions.nextRound()} icon={ArrowRight}>Next round</Button>}

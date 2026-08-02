@@ -43,6 +43,8 @@ export type RoundResult = {
   eliminatedRole: Exclude<Role, null> | null;
   tie: boolean;
   counts: Record<string, number>;
+  votes: Record<string, string | null>;
+  roles: Record<string, Role>;
   winner: "innocents" | "imposters";
   secretWord: string | null;
   points: number;
@@ -77,6 +79,7 @@ export type PrivateState = {
   roleSeen: boolean;
   ready: boolean;
   vote: string | null;
+  viewing: "result" | "scoreboard" | null;
 };
 
 export type ServerMessage =

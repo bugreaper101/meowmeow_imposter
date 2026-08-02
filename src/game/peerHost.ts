@@ -1,6 +1,6 @@
 import Peer, { type DataConnection, type MediaConnection } from "peerjs";
 import { saveSession, loadSession } from "./prefs";
-import type { RoomSettings, ServerMessage } from "./protocol";
+import type { PrivateState, RoomSettings, RoomState, ServerMessage } from "./protocol";
 import { getGameState, resetGameState, setGameState } from "./store";
 import { handleServerMessage, hydrateSessionFromStore } from "./messageBridge";
 
@@ -60,7 +60,7 @@ function applyHostAction(msg: Outgoing) {
   if (!session) return;
   const payload = msg as ServerMessage;
   if (msg.t === "createRoom" || msg.t === "joinRoom" || msg.t === "resume") {
-    const roomCode = String(msg.t === "joinRoom" ? msg.code : msg.t === "resume" ? msg.code : "").trim();
+    const roomCode = String(msg.t === "joinRoom" ? msg["code"] : msg.t === "resume" ? msg["code"] : "").trim();
     const sessionCode = roomCode || code;
     if (msg.t === "createRoom") {
       const newSession = createSession(sessionCode, currentPlayerId || "host");
@@ -68,7 +68,7 @@ function applyHostAction(msg: Outgoing) {
       currentRoomCode = sessionCode;
       localHost = true;
       setGameState({ status: "online" });
-      const roomState = {
+      const roomState: RoomState = {
         code: sessionCode,
         phase: "lobby",
         round: 0,
@@ -93,7 +93,7 @@ function applyHostAction(msg: Outgoing) {
         revealedWord: null,
         players: [],
       };
-      const privateState = { playerId: hostId, role: null, secretWord: null, isWriter: false, isHost: true, roleSeen: false, ready: false, vote: null };
+      const privateState: PrivateState = { playerId: hostId, role: null, secretWord: null, isWriter: false, isHost: true, roleSeen: false, ready: false, vote: null, viewing: null };
       setGameState({ room: roomState, self: privateState, peers: [] });
       saveSession({ code: sessionCode, token: "host" });
       setGameState({ playerId: hostId });
@@ -269,15 +269,15 @@ function processIncoming(msg: Outgoing) {
     return;
   }
   if (msg.t === "rtc") {
-    const target = msg.to as string;
+    const target = msg["to"] as string;
     const targetConnection = session.participants.get(target);
     if (targetConnection) {
-      targetConnection.send({ t: "rtc", from: currentPlayerId, signal: msg.signal });
+      targetConnection.send({ t: "rtc", from: currentPlayerId, signal: msg["signal"] });
     }
     return;
   }
   if (msg.t === "rtc-close") {
-    const target = msg.to as string;
+    const target = msg["to"] as string;
     const targetConnection = session.participants.get(target);
     if (targetConnection) {
       targetConnection.send({ t: "rtc-close", from: currentPlayerId });
