@@ -923,7 +923,11 @@ function About({ back }: Shared) {
         <p className="max-w-64 text-[13px] font-bold leading-6 text-[#887a8d]">Everyone gets a secret word — except the sneaky kitty. Give clues, chat, and vote out the imposter before the rounds run out.</p>
         <div className="w-full rounded-[24px] border border-[#f0e7f1] bg-[#fffafc] p-3 text-left shadow-[0_4px_0_#f5ebf1]">
           <p className="text-[10px] font-extrabold uppercase tracking-[.2em] text-[#b793aa]">Purrfect point rules</p>
-          <p className="mt-1 text-[12px] font-bold leading-5 text-[#7d6b83]">If the imposter gets booted, the sneaky kitty loses points, the clever voters earn a little sparkle, and the wrong guesses get a tiny paw-pat penalty. If the imposter survives, they get a big cozy win bonus and the rest get a mild meow-penalty.</p>
+          <div className="mt-2 space-y-2 text-[11px] font-bold leading-5 text-[#7d6b83]">
+            <p>• If the sneaky kitty gets booted by a cozy majority, the imposter loses 20 paw-spark points, while the clever cats who guessed right get a 20-point cuddle boost.</p>
+            <p>• If every fluffy detective points at the same sneaky tail, the room gets a bigger sparkle: the imposter loses 40 points and everyone else earns 40 points.</p>
+            <p>• If the imposter survives the whisker-twitching vote, they get a 50-point victory purr, the kitties who sniffed them out get 10 points, and anyone who guessed wrong or stayed paws-quiet gets a tiny 10-point meow-penalty.</p>
+          </div>
         </div>
         <Badge tone="lavender">Designed by Sazzat Zilan Sifat</Badge>
         <div className="w-full space-y-2 pt-2">
