@@ -1,7 +1,7 @@
 import Peer, { type DataConnection } from "peerjs";
 import type { PrivateState, PublicPlayer, RoomSettings, RoomState, ServerMessage, Role } from "./protocol";
 import { getGameState, resetGameState, setGameState } from "./store";
-import { loadSession, saveSession } from "./prefs";
+import { getClientId, loadHostRoom, loadSession, saveHostRoom, saveSession } from "./prefs";
 
 type Outgoing = Record<string, unknown> & { t: string };
 type SignalHandler = (from: string, signal: unknown) => void;
@@ -26,6 +26,7 @@ type PlayerRecord = {
   vote: string | null;
   viewing: "result" | "scoreboard" | null;
   joinedAt: number;
+  clientId: string | null;
 };
 
 type HostRoom = {
@@ -369,10 +370,30 @@ function publishRoom(room: HostRoom, fromPeerId?: string) {
   }
 }
 
+function persistSession() {
+  if (!currentRoomCode || !currentPlayerId || (mode !== "host" && mode !== "guest")) {
+    saveSession(null);
+    if (mode !== "host") saveHostRoom(null);
+    return;
+  }
+  saveSession({
+    mode,
+    code: currentRoomCode,
+    playerId: currentPlayerId,
+    token: currentToken || `${currentRoomCode}-${currentPlayerId}`,
+    nickname: currentPlayerNick,
+    avatar: currentAvatar,
+  });
+  if (mode === "host" && localRoom) {
+    saveHostRoom({ playerId: currentPlayerId, room: localRoom });
+  }
+}
+
 function publishStateToAll() {
   if (!localRoom) return;
   publishRoom(localRoom);
   updateStoreFromRoom(localRoom);
+  persistSession();
 }
 
 function updateStoreFromRoom(room: HostRoom) {
@@ -429,6 +450,8 @@ function resetRoomState() {
   mode = "none";
   peerConnections.clear();
   hostConnection = null;
+  saveSession(null);
+  saveHostRoom(null);
   setGameState({ room: null, self: null, peers: [], playerId: null });
 }
 
@@ -455,8 +478,10 @@ function bindPeerEvents(conn: DataConnection) {
     }
     if (hostConnection?.peer === conn.peer) {
       hostConnection = null;
-      if (mode === "guest") {
+      if (mode === "guest" && currentHostPeerId) {
         setGameState({ status: "reconnecting" });
+        queueJoinOnce();
+        scheduleJoinRetry(currentHostPeerId);
       }
     }
     peerConnections.delete(conn.peer);
@@ -489,29 +514,50 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
     if (msg.t === "joinRoom") {
       const roomCode = String(msg["code"] || "").trim();
       if (!localRoom || localRoom.code !== roomCode) return;
-      const playerId = generatePlayerId();
-      const player: PlayerRecord = {
-        id: playerId,
-        peerId: conn.peer,
-        nickname: String(msg["nickname"] || "Guest"),
-        avatar: typeof msg["avatar"] === "string" ? msg["avatar"] : null,
-        connected: true,
-        host: false,
-        ready: false,
-        score: 0,
-        roundScore: 0,
-        voted: false,
-        mic: true,
-        speaker: true,
-        speaking: false,
-        eliminated: false,
-        role: null,
-        roleSeen: false,
-        vote: null,
-        viewing: null,
-        joinedAt: Date.now(),
-      };
-      localRoom.players.push(player);
+      const clientId = typeof msg["clientId"] === "string" && msg["clientId"] ? String(msg["clientId"]) : null;
+      const token = typeof msg["token"] === "string" ? String(msg["token"]) : "";
+      const nickname = String(msg["nickname"] || "Guest");
+      const avatar = typeof msg["avatar"] === "string" ? msg["avatar"] : null;
+      let player = localRoom.players.find((entry) => {
+        if (clientId && entry.clientId === clientId) return true;
+        if (token && `${localRoom!.code}-${entry.id}` === token) return true;
+        if (entry.peerId === conn.peer) return true;
+        return false;
+      });
+      if (player) {
+        if (player.peerId !== conn.peer) {
+          peerConnections.delete(player.peerId);
+        }
+        player.peerId = conn.peer;
+        player.connected = true;
+        player.nickname = nickname;
+        if (avatar) player.avatar = avatar;
+        if (clientId) player.clientId = clientId;
+      } else {
+        player = {
+          id: generatePlayerId(),
+          peerId: conn.peer,
+          nickname,
+          avatar,
+          connected: true,
+          host: false,
+          ready: false,
+          score: 0,
+          roundScore: 0,
+          voted: false,
+          mic: true,
+          speaker: true,
+          speaking: false,
+          eliminated: false,
+          role: null,
+          roleSeen: false,
+          vote: null,
+          viewing: null,
+          joinedAt: Date.now(),
+          clientId,
+        };
+        localRoom.players.push(player);
+      }
       peerConnections.set(conn.peer, conn);
       if (!localRoom.hostId) {
         localRoom.hostId = player.id;
@@ -523,7 +569,7 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
       const publicRoom = buildPublicRoom(localRoom);
       const privateState = buildPrivateState(localRoom, player.id);
       try {
-        conn.send({ t: "session", playerId, token: `${roomCode}-${playerId}`, code: roomCode });
+        conn.send({ t: "session", playerId: player.id, token: `${roomCode}-${player.id}`, code: roomCode });
         conn.send({ t: "room", room: publicRoom });
         conn.send({ t: "private", private: privateState });
         conn.send({ t: "peers", peers: [...peerConnections.keys()].filter((peerId) => peerId !== conn.peer) });
@@ -760,7 +806,7 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
     if (msg.t === "session") {
       currentPlayerId = String(msg["playerId"] || currentPlayerId);
       currentToken = String(msg["token"] || currentToken);
-      saveSession({ code: String(msg["code"] || currentRoomCode || ""), token: String(msg["token"] || currentToken || "") });
+      persistSession();
       setGameState({ playerId: currentPlayerId });
       return;
     }
@@ -912,11 +958,24 @@ export function connect(hostPeerIdOverride?: string): Promise<void> {
   });
 }
 
+function queueJoinOnce() {
+  queue = queue.filter((entry) => entry.t !== "joinRoom");
+  queue.push({
+    t: "joinRoom",
+    code: currentRoomCode,
+    nickname: currentPlayerNick,
+    avatar: currentAvatar,
+    clientId: getClientId(),
+    token: currentToken,
+  });
+}
+
 function scheduleJoinRetry(hostId: string) {
   clearJoinRetry();
   joinRetryTimer = setTimeout(() => {
     if (mode !== "guest") return;
     hostConnection = null;
+    queueJoinOnce();
     if (peer?.open) connectToHost(hostId);
   }, 900);
 }
@@ -986,21 +1045,26 @@ export function send(msg: Outgoing) {
       vote: null,
       viewing: null,
       joinedAt: Date.now(),
+      clientId: getClientId(),
     });
     mode = "host";
-    saveSession({ code: roomCode, token: `${roomCode}-${currentPlayerId}` });
+    persistSession();
     setGameState({ playerId: currentPlayerId, room: buildPublicRoom(localRoom), self: buildPrivateState(localRoom, currentPlayerId), peers: [] });
     void connect(currentHostPeerId);
     return;
   }
 
   if (msg.t === "joinRoom") {
+    if (getGameState().room && currentRoomCode === String(msg["code"] || "")) {
+      return;
+    }
     mode = "guest";
     currentRoomCode = String(msg["code"] || "");
     currentHostPeerId = hostPeerId(currentRoomCode);
     currentPlayerNick = String(msg["nickname"] || "Guest");
     currentAvatar = typeof msg["avatar"] === "string" ? msg["avatar"] : null;
-    queue.push(msg);
+    persistSession();
+    queueJoinOnce();
     void connect(currentHostPeerId);
     return;
   }
@@ -1043,6 +1107,45 @@ export function disconnect() {
   destroyPeer();
   peerConnections.clear();
   resetRoomState();
+}
+
+export function resumeIfPossible() {
+  if (typeof window === "undefined") return false;
+  const session = loadSession();
+  if (!session?.code) return false;
+  currentRoomCode = session.code;
+  currentPlayerId = session.playerId;
+  currentToken = session.token;
+  currentPlayerNick = session.nickname;
+  currentAvatar = session.avatar;
+  currentHostPeerId = hostPeerId(session.code);
+  if (session.mode === "host") {
+    const saved = loadHostRoom<{ playerId: string; room: HostRoom }>();
+    if (!saved?.room) return false;
+    localRoom = saved.room;
+    currentPlayerId = saved.playerId || session.playerId;
+    localRoom.players.forEach((player) => {
+      if (player.id !== currentPlayerId) player.connected = false;
+      else player.connected = true;
+    });
+    mode = "host";
+    persistSession();
+    setGameState({
+      status: "connecting",
+      playerId: currentPlayerId,
+      room: buildPublicRoom(localRoom),
+      self: buildPrivateState(localRoom, currentPlayerId),
+      peers: [],
+    });
+    if (localRoom.phase === "clue" || localRoom.phase === "discussion") startAutoAdvanceTimer();
+    void connect(currentHostPeerId);
+    return true;
+  }
+  mode = "guest";
+  setGameState({ status: "reconnecting", playerId: currentPlayerId });
+  queueJoinOnce();
+  void connect(currentHostPeerId);
+  return true;
 }
 
 export function clearError() {

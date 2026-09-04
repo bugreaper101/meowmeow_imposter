@@ -13,7 +13,7 @@ import {
   Toast, Top, TimerRing, VoiceControls,
 } from "./meow/ui";
 import { beanFor, catalogEntry } from "@/game/avatars";
-import { actions, clearError, connect, disconnect } from "@/game/client";
+import { actions, clearError, disconnect, resumeIfPossible } from "@/game/client";
 import { useGame } from "@/game/store";
 import { loadPrefs, savePrefs } from "@/game/prefs";
 import { CLUE_SECONDS, DISCUSSION_SECONDS, indexOfSeconds, type PublicPlayer, type RoomState } from "@/game/protocol";
@@ -45,14 +45,16 @@ export default function MeowMeowImposter() {
   const [selectedVote, setSelectedVote] = useState<string | null>(null);
   const [dialog, setDialog] = useState<null | "leave" | "full" | "lost" | "notFound">(null);
   const [toast, setToast] = useState("");
+  const joiningRef = useRef(false);
 
-  // Preferences are the only thing that survives a reload.
   useEffect(() => {
     const prefs = loadPrefs();
     if (prefs.nickname) setNickname(prefs.nickname);
     if (prefs.avatar) setAvatar(prefs.avatar);
     setMicOn(prefs.micEnabled);
     setSpeakerOn(prefs.speakerEnabled);
+    const resumed = resumeIfPossible();
+    if (resumed) return;
     const invited = new URLSearchParams(window.location.search).get("code")?.replace(/\D/g, "").slice(0, CODE_LENGTH);
     if (invited && invited.length === CODE_LENGTH) {
       setCode(invited.split(""));
@@ -70,8 +72,10 @@ export default function MeowMeowImposter() {
   useEffect(() => {
     if (!lastError) return;
     if (lastError.code === "room_full") setDialog("full");
-    else if (lastError.code === "room_not_found") setDialog("notFound");
-    else setToast(lastError.message);
+    else if (lastError.code === "room_not_found") {
+      joiningRef.current = false;
+      setDialog("notFound");
+    } else setToast(lastError.message);
     clearError();
   }, [lastError]);
 
@@ -162,15 +166,17 @@ export default function MeowMeowImposter() {
     actions.createRoom(nickname.trim(), avatar, settings);
   };
   const joinRoom = () => {
+    if (joiningRef.current || room) return;
+    joiningRef.current = true;
     commitProfile();
     actions.joinRoom(code.join(""), nickname.trim(), avatar);
   };
 
   const leaveRoom = useCallback(() => {
+    joiningRef.current = false;
     actions.leaveRoom();
     stopVoice();
     disconnect();
-    void connect();
     setStage("Welcome");
     setConfirmed(false);
   }, []);
