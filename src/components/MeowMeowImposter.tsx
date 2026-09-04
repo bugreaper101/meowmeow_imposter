@@ -53,6 +53,12 @@ export default function MeowMeowImposter() {
     if (prefs.avatar) setAvatar(prefs.avatar);
     setMicOn(prefs.micEnabled);
     setSpeakerOn(prefs.speakerEnabled);
+    const invited = new URLSearchParams(window.location.search).get("code")?.replace(/\D/g, "").slice(0, CODE_LENGTH);
+    if (invited && invited.length === CODE_LENGTH) {
+      setCode(invited.split(""));
+      setMode("join");
+      setStage("Join Room");
+    }
     void connect();
   }, []);
 
@@ -256,6 +262,14 @@ export default function MeowMeowImposter() {
 }
 
 type Shared = Record<string, any>;
+
+function inviteUrl(code: string) {
+  const url = new URL(window.location.href);
+  url.search = "";
+  url.hash = "";
+  url.searchParams.set("code", code);
+  return url.toString();
+}
 
 function screenForPhase(room: RoomState, isWriter: boolean, viewing: "result" | "scoreboard" | null) {
   if ((room.phase === "result" || room.phase === "scoreboard") && viewing === "scoreboard") {
@@ -495,21 +509,23 @@ function Lobby({ room, self, setToast, setDialog }: Shared) {
   const players: PublicPlayer[] = room.players;
   const enough = players.length >= 3;
   const share = async () => {
-    const text = `Join my MeowMeow Imposter room: ${room.code}`;
+    const invite = inviteUrl(room.code);
+    const text = `Join my MeowMeow Imposter room: ${room.code}\n${invite}`;
     try {
-      if (navigator.share) await navigator.share({ title: "MeowMeow Imposter", text });
+      if (navigator.share) await navigator.share({ title: "MeowMeow Imposter", text, url: invite });
       else {
         await navigator.clipboard.writeText(text);
-        setToast("Invite copied 🐾");
+        setToast("Invite link copied 🐾");
       }
     } catch {
       setToast("Sharing cancelled");
     }
   };
   const copy = async () => {
+    const invite = inviteUrl(room.code);
     try {
-      await navigator.clipboard.writeText(room.code);
-      setToast("Room code copied 🐾");
+      await navigator.clipboard.writeText(invite);
+      setToast("Invite link copied 🐾");
     } catch {
       setToast(`Room code: ${room.code}`);
     }

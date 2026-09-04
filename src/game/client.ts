@@ -92,7 +92,7 @@ function generatePlayerId() {
 }
 
 function hostPeerId(code: string) {
-  return `${code.trim().toUpperCase()}-host`;
+  return `mmi-${code.trim().toUpperCase()}-host`;
 }
 
 function createDefaultRoom(code: string): HostRoom {
