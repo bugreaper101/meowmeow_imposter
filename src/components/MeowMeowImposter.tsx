@@ -362,7 +362,7 @@ function Splash({ go }: Shared) {
 function Welcome({ go, setMode }: Shared) {
   return (
     <div className="flex flex-1 flex-col">
-      <Top title="Gather your kitties" sub="Anyone with the app can join over the internet — up to 30 kitties in a room." />
+      <Top title="Gather your kitties" sub="Open the GitHub link on any phone. The old app already uses this same link." />
       <div className="relative my-auto flex justify-center py-8">
         <div className="absolute size-52 rounded-full bg-[#fbe9ef]" />
         {avatarCatalog.slice(0, 3).map((a, i) => (
@@ -570,7 +570,7 @@ function Lobby({ room, self, setToast, setDialog }: Shared) {
         <Badge tone="lavender"><Timer size={10} /> {room.settings.rounds} ROUNDS</Badge>
         <Badge tone="cream">{room.settings.imposters} IMPOSTER{room.settings.imposters > 1 ? "S" : ""}</Badge>
       </div>
-      <p className="mb-3 text-center text-[10px] font-extrabold leading-4 text-[#9a86a8]">Share the code. Any phone on the internet can join — you only need 3 to start.</p>
+      <p className="mb-3 text-center text-[10px] font-extrabold leading-4 text-[#9a86a8]">Share the code or this GitHub link. Friends can stay in the old app or open the link in Chrome.</p>
       <div className="grid flex-1 grid-cols-3 content-start gap-3 overflow-y-auto pb-3 [scrollbar-width:none]">
         {players.map((player) => (
           <div key={player.id} className={`relative grid place-items-center rounded-2xl p-2 ${player.host ? "bg-[#fff2cd] shadow-[0_4px_0_#f0dfae]" : "bg-white shadow-[0_3px_0_#f1e6ed]"} ${player.connected ? "" : "opacity-45 grayscale"}`}>

@@ -1,10 +1,11 @@
-import Peer, { type DataConnection } from "peerjs";
 import type { PrivateState, PublicPlayer, RoomSettings, RoomState, ServerMessage, Role } from "./protocol";
 import { getGameState, resetGameState, setGameState } from "./store";
 import { getClientId, loadHostRoom, loadSession, saveHostRoom, saveSession } from "./prefs";
+import { connectRelay, disconnectRelay, inboxPath, isRelayReady, privatePath, relayPublish } from "./relay";
 
 type Outgoing = Record<string, unknown> & { t: string };
 type SignalHandler = (from: string, signal: unknown) => void;
+type Wire = { peer: string; send?: (msg: unknown) => void };
 
 type PlayerRecord = {
   id: string;
@@ -54,13 +55,9 @@ type HostRoom = {
   hostPeerId: string;
 };
 
-let peer: Peer | null = null;
-let hostConnection: DataConnection | null = null;
 let queue: Outgoing[] = [];
 let intentionalClose = false;
-let peerGeneration = 0;
 let joinRetryTimer: ReturnType<typeof setTimeout> | null = null;
-let hostIdAttempts = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let signalHandler: SignalHandler | null = null;
 let closeHandler: ((from: string) => void) | null = null;
@@ -72,20 +69,29 @@ let currentPlayerNick: string | null = null;
 let currentAvatar: string | null = null;
 let currentToken: string | null = null;
 let localRoom: HostRoom | null = null;
-let peerConnections = new Map<string, DataConnection>();
+let peerConnections = new Map<string, Wire>();
 let autoAdvanceTimer: ReturnType<typeof setInterval> | null = null;
+let relayBound = false;
 
 function flushQueuedMessages() {
-  if (!hostConnection || !hostConnection.open) return;
+  if (mode !== "guest" || !currentRoomCode || !isRelayReady()) return;
   const pending = queue;
   queue = [];
   for (const msg of pending) {
-    try {
-      hostConnection.send(msg);
-    } catch {
-      queue.push(msg);
-    }
+    const sent = relayPublish(inboxPath(currentRoomCode), { ...msg, clientId: getClientId() });
+    if (!sent) queue.push(msg);
   }
+}
+
+function wireClient(clientId: string) {
+  if (!currentRoomCode || !clientId) return;
+  const code = currentRoomCode;
+  peerConnections.set(clientId, {
+    peer: clientId,
+    send: (msg: unknown) => {
+      relayPublish(privatePath(code, clientId), msg);
+    },
+  });
 }
 
 function generateRoomCode() {
@@ -97,28 +103,6 @@ function generatePlayerId() {
 }
 
 const MAX_PLAYERS = 30;
-
-const PEER_OPTIONS = {
-  host: "0.peerjs.com",
-  port: 443,
-  path: "/",
-  secure: true,
-  debug: 0,
-  pingInterval: 5000,
-  config: {
-    iceServers: [
-      { urls: "stun:stun.l.google.com:19302" },
-      { urls: "stun:stun1.l.google.com:19302" },
-      { urls: "stun:stun2.l.google.com:19302" },
-      {
-        urls: ["turn:eu-0.turn.peerjs.com:3478", "turn:us-0.turn.peerjs.com:3478"],
-        username: "peerjs",
-        credential: "peerjsp",
-      },
-    ],
-    sdpSemantics: "unified-plan" as const,
-  },
-};
 
 function hostPeerId(code: string) {
   return `mmi-${code.trim().toUpperCase()}-host`;
@@ -476,47 +460,10 @@ function resetRoomState() {
   currentToken = null;
   mode = "none";
   peerConnections.clear();
-  hostConnection = null;
+  relayBound = false;
   saveSession(null);
   saveHostRoom(null);
   setGameState({ room: null, self: null, peers: [], playerId: null });
-}
-
-function bindPeerEvents(conn: DataConnection) {
-  conn.on("open", () => {
-    if (mode === "guest" && hostConnection?.peer === conn.peer) {
-      flushQueuedMessages();
-    }
-  });
-  conn.on("data", (data) => {
-    const msg = data as Outgoing;
-    if (!msg || typeof msg.t !== "string") return;
-    handleIncoming(msg, conn);
-  });
-  conn.on("close", () => {
-    if (mode === "host") {
-      const disconnectingPlayer = localRoom?.players.find((player) => player.peerId === conn.peer);
-      if (disconnectingPlayer) {
-        disconnectingPlayer.connected = false;
-        peerConnections.delete(conn.peer);
-        promoteHostIfNeeded();
-        publishStateToAll();
-      }
-    }
-    if (hostConnection?.peer === conn.peer) {
-      hostConnection = null;
-      if (mode === "guest" && currentHostPeerId) {
-        setGameState({ status: "reconnecting" });
-        queueJoinOnce();
-        scheduleJoinRetry(currentHostPeerId);
-      }
-    }
-    peerConnections.delete(conn.peer);
-  });
-  conn.on("error", () => {
-    if (hostConnection?.peer === conn.peer) hostConnection = null;
-    peerConnections.delete(conn.peer);
-  });
 }
 
 function promoteHostIfNeeded() {
@@ -532,7 +479,7 @@ function promoteHostIfNeeded() {
   });
 }
 
-function handleIncoming(msg: Outgoing, conn: DataConnection) {
+function handleIncoming(msg: Outgoing, conn: Wire) {
   if (mode === "host") {
     if (msg.t === "createRoom") {
       // host-side rooms are created locally from the UI action, so ignore
@@ -542,35 +489,33 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
       const roomCode = String(msg["code"] || "").trim();
       if (!localRoom || localRoom.code !== roomCode) return;
       const clientId = typeof msg["clientId"] === "string" && msg["clientId"] ? String(msg["clientId"]) : null;
+      const from = (clientId || conn.peer || "").trim();
+      if (!from) return;
       const token = typeof msg["token"] === "string" ? String(msg["token"]) : "";
       const nickname = String(msg["nickname"] || "Guest");
       const avatar = typeof msg["avatar"] === "string" ? msg["avatar"] : null;
       let player = localRoom.players.find((entry) => {
         if (clientId && entry.clientId === clientId) return true;
         if (token && `${localRoom!.code}-${entry.id}` === token) return true;
-        if (entry.peerId === conn.peer) return true;
+        if (entry.peerId === from) return true;
         return false;
       });
       if (player) {
-        if (player.peerId !== conn.peer) {
+        if (player.peerId !== from) {
           peerConnections.delete(player.peerId);
         }
-        player.peerId = conn.peer;
+        player.peerId = from;
         player.connected = true;
         player.nickname = nickname;
         if (avatar) player.avatar = avatar;
         if (clientId) player.clientId = clientId;
       } else if (localRoom.players.filter((entry) => entry.connected).length >= MAX_PLAYERS) {
-        try {
-          conn.send({ t: "error", code: "room_full", message: "This room is full (30 kitties)." });
-        } catch {
-          // ignore
-        }
+        relayPublish(privatePath(roomCode, from), { t: "error", code: "room_full", message: "This room is full (30 kitties)." });
         return;
       } else {
         player = {
           id: generatePlayerId(),
-          peerId: conn.peer,
+          peerId: from,
           nickname,
           avatar,
           connected: true,
@@ -592,7 +537,7 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
         };
         localRoom.players.push(player);
       }
-      peerConnections.set(conn.peer, conn);
+      wireClient(from);
       if (!localRoom.hostId) {
         localRoom.hostId = player.id;
         player.host = true;
@@ -602,14 +547,11 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
       }
       const publicRoom = buildPublicRoom(localRoom);
       const privateState = buildPrivateState(localRoom, player.id);
-      try {
-        conn.send({ t: "session", playerId: player.id, token: `${roomCode}-${player.id}`, code: roomCode });
-        conn.send({ t: "room", room: publicRoom });
-        conn.send({ t: "private", private: privateState });
-        conn.send({ t: "peers", peers: [...peerConnections.keys()].filter((peerId) => peerId !== conn.peer) });
-      } catch {
-        // ignore send issues
-      }
+      const sendTo = peerConnections.get(from)?.send;
+      sendTo?.({ t: "session", playerId: player.id, token: `${roomCode}-${player.id}`, code: roomCode });
+      sendTo?.({ t: "room", room: publicRoom });
+      sendTo?.({ t: "private", private: privateState });
+      sendTo?.({ t: "peers", peers: [...peerConnections.keys()].filter((peerId) => peerId !== from) });
       localRoom.takenAvatars = [...new Set(localRoom.players.map((entry) => entry.avatar).filter(Boolean) as string[])];
       publishStateToAll();
       return;
@@ -625,8 +567,8 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
       return;
     }
     const player =
-      localRoom?.players.find((entry) => entry.peerId === conn.peer) ??
-      (mode === "host" && (conn.peer === peer?.id || conn.peer === currentPlayerId)
+      localRoom?.players.find((entry) => entry.peerId === conn.peer || entry.clientId === conn.peer) ??
+      (mode === "host" && (conn.peer === getClientId() || conn.peer === currentPlayerId)
         ? localRoom?.players.find((entry) => entry.id === currentPlayerId)
         : undefined);
     if (!localRoom || !player) return;
@@ -893,22 +835,16 @@ function clearJoinRetry() {
 }
 
 function destroyPeer() {
-  peerGeneration += 1;
   clearJoinRetry();
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
-  try {
-    peer?.destroy();
-  } catch {
-    // ignore
-  }
-  peer = null;
-  hostConnection = null;
+  relayBound = false;
+  disconnectRelay();
 }
 
-function scheduleFullReconnect(hostId?: string | null) {
+function scheduleFullReconnect() {
   if (intentionalClose) return;
   if (reconnectTimer) return;
   setGameState({ status: "reconnecting" });
@@ -916,121 +852,52 @@ function scheduleFullReconnect(hostId?: string | null) {
     reconnectTimer = null;
     if (intentionalClose) return;
     destroyPeer();
-    void connect(hostId ?? currentHostPeerId ?? undefined);
+    void connect();
   }, 1200);
 }
 
-export function connect(hostPeerIdOverride?: string): Promise<void> {
+export function connect(_hostPeerIdOverride?: string): Promise<void> {
   if (typeof window === "undefined") return Promise.resolve();
   if (mode !== "host" && mode !== "guest") return Promise.resolve();
-
-  const hostId = hostPeerIdOverride ?? currentHostPeerId;
-  if (mode === "host" && peer && hostId && peer.id !== hostId) {
-    destroyPeer();
-  }
-
-  if (peer) {
-    if (peer.open) {
-      if (mode === "guest" && hostId && !hostConnection?.open) connectToHost(hostId);
-      return Promise.resolve();
-    }
-    return new Promise((resolve) => {
-      const gen = peerGeneration;
-      peer?.once("open", () => {
-        if (gen !== peerGeneration) {
-          resolve();
-          return;
-        }
-        if (mode === "guest" && hostId && !hostConnection?.open) connectToHost(hostId);
-        resolve();
-      });
-    });
+  if (!currentRoomCode) return Promise.resolve();
+  if (isRelayReady() && relayBound) {
+    if (mode === "guest") flushQueuedMessages();
+    return Promise.resolve();
   }
 
   intentionalClose = false;
-  const gen = ++peerGeneration;
   setGameState({ status: "connecting" });
-  return new Promise((resolve) => {
-    try {
-      peer = mode === "guest" || !hostId ? new Peer(PEER_OPTIONS) : new Peer(hostId, PEER_OPTIONS);
-    } catch (error) {
-      console.error("PeerJS init failed", error);
-      scheduleFullReconnect(hostId);
-      resolve();
-      return;
-    }
-
-    peer.on("open", (id) => {
-      if (gen !== peerGeneration) return;
-      hostIdAttempts = 0;
-      currentHostPeerId = mode === "host" ? id : currentHostPeerId;
+  return connectRelay({
+    clientId: getClientId(),
+    code: currentRoomCode,
+    role: mode,
+    onMessage: (msg) => {
+      if (mode === "host") {
+        const from = String(msg["clientId"] || msg["peer"] || "");
+        handleIncoming(msg, { peer: from });
+        return;
+      }
+      handleIncoming(msg, { peer: "host" });
+    },
+  })
+    .then(() => {
+      relayBound = true;
+      setGameState({ status: "online", lastError: null, playerId: currentPlayerId });
       if (mode === "host" && localRoom) {
-        localRoom.hostPeerId = id;
         const hostPlayer = localRoom.players.find((entry) => entry.id === currentPlayerId);
-        if (hostPlayer && hostPlayer.peerId !== id) {
-          hostPlayer.peerId = id;
+        if (hostPlayer) {
+          hostPlayer.peerId = getClientId();
+          hostPlayer.clientId = getClientId();
         }
         persistSession();
         publishStateToAll();
       }
-      setGameState({ status: "online", lastError: null, playerId: currentPlayerId });
-      if (hostId && mode === "guest" && !hostConnection?.open) {
-        connectToHost(hostId);
-      }
-      if (hostConnection?.open) flushQueuedMessages();
-      resolve();
+      if (mode === "guest") flushQueuedMessages();
+    })
+    .catch((error) => {
+      console.error("Room relay failed", error);
+      scheduleFullReconnect();
     });
-
-    peer.on("connection", (conn) => {
-      if (gen !== peerGeneration) return;
-      bindPeerEvents(conn);
-      if (mode === "host") peerConnections.set(conn.peer, conn);
-    });
-
-    peer.on("disconnected", () => {
-      if (gen !== peerGeneration || intentionalClose) return;
-      setGameState({ status: "reconnecting" });
-      try {
-        peer?.reconnect();
-      } catch {
-        scheduleFullReconnect(hostId);
-      }
-    });
-
-    peer.on("error", (error: { type?: string } | Error) => {
-      if (gen !== peerGeneration) return;
-      console.error("PeerJS error", error);
-      const type = "type" in error ? error.type : undefined;
-      if (type === "unavailable-id" && mode === "host") {
-        hostIdAttempts += 1;
-        const nextCode = generateRoomCode();
-        currentRoomCode = nextCode;
-        currentHostPeerId = hostPeerId(nextCode);
-        if (localRoom) {
-          localRoom.code = nextCode;
-          localRoom.hostPeerId = currentHostPeerId;
-        }
-        persistSession();
-        setGameState({ room: localRoom ? buildPublicRoom(localRoom) : null });
-        destroyPeer();
-        void connect(currentHostPeerId);
-        return;
-      }
-      if ((type === "peer-unavailable" || type === "network" || type === "disconnected" || type === "socket-closed" || type === "server-error") && mode === "guest" && hostId) {
-        setGameState({ status: "reconnecting" });
-        scheduleJoinRetry(hostId);
-        return;
-      }
-      if (type === "peer-unavailable") {
-        setGameState({
-          status: "reconnecting",
-          lastError: { code: "room_not_found", message: "We couldn't find that room. Check the code and try again." },
-        });
-        return;
-      }
-      scheduleFullReconnect(hostId);
-    });
-  });
 }
 
 function queueJoinOnce() {
@@ -1045,42 +912,14 @@ function queueJoinOnce() {
   });
 }
 
-function scheduleJoinRetry(hostId: string) {
+function scheduleJoinRetry() {
   clearJoinRetry();
   joinRetryTimer = setTimeout(() => {
     if (mode !== "guest") return;
-    hostConnection = null;
     queueJoinOnce();
-    if (peer?.open) connectToHost(hostId);
+    if (isRelayReady()) flushQueuedMessages();
+    else void connect();
   }, 900);
-}
-
-function connectToHost(hostId: string) {
-  if (!peer || !peer.open || hostConnection?.open) return;
-  const conn = peer.connect(hostId, { reliable: true, serialization: "json" });
-  hostConnection = conn;
-  const timeout = setTimeout(() => {
-    if (conn.open || mode !== "guest") return;
-    try {
-      conn.close();
-    } catch {
-      // ignore
-    }
-    hostConnection = null;
-    scheduleJoinRetry(hostId);
-  }, 4000);
-  conn.on("open", () => {
-    clearTimeout(timeout);
-    flushQueuedMessages();
-  });
-  conn.on("error", (error) => {
-    clearTimeout(timeout);
-    console.error("PeerJS host connection failed", error);
-    hostConnection = null;
-    scheduleJoinRetry(hostId);
-  });
-  bindPeerEvents(conn);
-  if (conn.open) flushQueuedMessages();
 }
 
 export function send(msg: Outgoing) {
@@ -1102,7 +941,7 @@ export function send(msg: Outgoing) {
     localRoom.hostId = currentPlayerId;
     localRoom.players.push({
       id: currentPlayerId,
-      peerId: peer?.id ?? currentPlayerId,
+      peerId: getClientId(),
       nickname: currentPlayerNick,
       avatar: currentAvatar,
       connected: true,
@@ -1125,7 +964,7 @@ export function send(msg: Outgoing) {
     mode = "host";
     persistSession();
     setGameState({ playerId: currentPlayerId, room: buildPublicRoom(localRoom), self: buildPrivateState(localRoom, currentPlayerId), peers: [] });
-    void connect(currentHostPeerId);
+    void connect();
     return;
   }
 
@@ -1141,45 +980,41 @@ export function send(msg: Outgoing) {
     currentAvatar = typeof msg["avatar"] === "string" ? msg["avatar"] : null;
     persistSession();
     queueJoinOnce();
-    void connect(currentHostPeerId);
+    void connect();
     return;
   }
 
   if (mode === "host") {
     if (msg.t === "leaveRoom") {
       resetRoomState();
+      disconnectRelay();
       return;
     }
     if (localRoom && currentPlayerId) {
       const localPlayer = localRoom.players.find((entry) => entry.id === currentPlayerId);
       if (localPlayer) {
-        handleIncoming(msg, { peer: peer?.id ?? currentPlayerId, send: () => undefined } as unknown as DataConnection);
+        handleIncoming(msg, { peer: getClientId() });
       }
     }
     return;
   }
 
-  if (hostConnection?.open) {
-    hostConnection.send(msg);
+  if (msg.t === "leaveRoom") {
+    if (currentRoomCode) relayPublish(inboxPath(currentRoomCode), { ...msg, clientId: getClientId() });
+    resetRoomState();
+    disconnectRelay();
     return;
   }
 
-  queue.push(msg);
-  if (currentHostPeerId) {
-    if (!peer || !peer.open) {
-      void connect(currentHostPeerId);
-      return;
-    }
-    connectToHost(currentHostPeerId);
-  }
+  queue.push({ ...msg, clientId: getClientId() });
+  if (isRelayReady()) flushQueuedMessages();
+  else void connect();
 }
 
 export function disconnect() {
   intentionalClose = true;
   saveSession(null);
   queue = [];
-  hostConnection?.close();
-  hostConnection = null;
   destroyPeer();
   peerConnections.clear();
   resetRoomState();
@@ -1202,7 +1037,12 @@ export function resumeIfPossible() {
     currentPlayerId = saved.playerId || session.playerId;
     localRoom.players.forEach((player) => {
       if (player.id !== currentPlayerId) player.connected = false;
-      else player.connected = true;
+      else {
+        player.connected = true;
+        player.peerId = getClientId();
+        player.clientId = getClientId();
+      }
+      if (player.clientId) wireClient(player.clientId);
     });
     mode = "host";
     persistSession();
@@ -1214,13 +1054,13 @@ export function resumeIfPossible() {
       peers: [],
     });
     if (localRoom.phase === "clue" || localRoom.phase === "discussion") startAutoAdvanceTimer();
-    void connect(currentHostPeerId);
+    void connect();
     return true;
   }
   mode = "guest";
   setGameState({ status: "reconnecting", playerId: currentPlayerId });
   queueJoinOnce();
-  void connect(currentHostPeerId);
+  void connect();
   return true;
 }
 

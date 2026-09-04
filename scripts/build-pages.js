@@ -39,13 +39,12 @@ function buildShellHtml() {
     <meta name="theme-color" content="#f5eef4" />
     <title>MeowMeow Imposter</title>
     <link rel="icon" href="${base}favicon.ico" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Nunito:wght@500;600;700;800;900&family=DM+Mono:wght@400;500&display=swap" />
+    <style>html,body,#root{margin:0;min-height:100%;background:#f5eef4}body{font-family:sans-serif;color:#51455e}</style>
     ${css ? `<link rel="stylesheet" href="${base}assets/${css}" />` : ''}
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Nunito:wght@500;600;700;800;900&family=DM+Mono:wght@400;500&display=swap" media="print" onload="this.media='all'" />
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><p style="text-align:center;padding:48px 20px;font-weight:800">meowmeow imposter</p></div>
     <script type="module" src="${base}assets/${entry}"></script>
   </body>
 </html>
