@@ -175,12 +175,12 @@ function buildPrivateState(room: HostRoom, playerId: string): PrivateState {
     return { playerId, role: null, secretWord: null, isWriter: false, isHost: false, roleSeen: false, ready: false, vote: null, viewing: null };
   }
   const isWriter = room.writerId === player.id;
-  const revealed = player.roleSeen || room.phase === "writer";
-  const canSeeWord = isWriter || (revealed && player.role === "player");
+  const isImposter = player.role === "imposter";
+  const roleAssigned = player.role != null;
   return {
     playerId,
-    role: isWriter || revealed ? player.role : null,
-    secretWord: canSeeWord ? room.secretWord : null,
+    role: player.role,
+    secretWord: roleAssigned && !isImposter ? room.secretWord : null,
     isWriter,
     isHost: room.hostId === player.id,
     roleSeen: player.roleSeen,
@@ -590,7 +590,11 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
       }
       return;
     }
-    const player = localRoom?.players.find((entry) => entry.peerId === conn.peer);
+    const player =
+      localRoom?.players.find((entry) => entry.peerId === conn.peer) ??
+      (mode === "host" && (conn.peer === peer?.id || conn.peer === currentPlayerId)
+        ? localRoom?.players.find((entry) => entry.id === currentPlayerId)
+        : undefined);
     if (!localRoom || !player) return;
     switch (msg.t) {
       case "selectAvatar":
@@ -658,12 +662,10 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
         break;
       case "ready":
         if (localRoom.phase !== "roleReveal" && localRoom.phase !== "ready") return;
-        if (localRoom.phase === "roleReveal" && !localRoom.players.every((entry) => entry.roleSeen || !entry.connected)) return;
+        player.roleSeen = true;
         player.ready = true;
-        if (localRoom.players.every((entry) => entry.ready || !entry.connected)) {
-          localRoom.phase = "clue";
-          localRoom.currentSpeakerId = localRoom.speakingOrder[0] ?? localRoom.players.find((entry) => entry.connected)?.id ?? null;
-          setRoomTimer(localRoom, "clue", localRoom.settings.clueSeconds);
+        if (getConnectedPlayers(localRoom).every((entry) => entry.ready)) {
+          startCluePhase(localRoom);
         }
         publishStateToAll();
         break;

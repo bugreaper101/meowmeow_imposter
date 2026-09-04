@@ -625,10 +625,10 @@ export function RoleReveal({ room, self }: Shared) {
     : role === "writer"
       ? { emoji: "✎", title: "You are the Writer", sub: "You chose the word — give fair clues." }
       : { emoji: "🐾", title: "You are a Kitty", sub: "Use the secret word to give a clue." };
-  const revealText = isImposter ? null : self?.secretWord ?? null;
+  const secretWord = isImposter ? null : self?.secretWord ?? null;
   const revealed = flipped || Boolean(self?.roleSeen);
   const reveal = () => {
-    if (revealed && self?.ready) return;
+    if (self?.ready) return;
     if (!revealed) {
       setFlipped(true);
       actions.roleSeen();
@@ -646,10 +646,15 @@ export function RoleReveal({ room, self }: Shared) {
             {flipped ? (
               <>
                 <p className="text-4xl">{copy.emoji}</p>
-                <p className="mt-3 font-[Baloo_2] text-2xl font-extrabold text-[#5b4b86]">{revealText ? "Secret word" : copy.title}</p>
-                <p className="mt-1 text-xs font-bold text-[#7d6ba8]">
-                  {revealText ? revealText : copy.sub}
-                </p>
+                <p className="mt-3 font-[Baloo_2] text-2xl font-extrabold text-[#5b4b86]">{copy.title}</p>
+                <p className="mt-1 text-xs font-bold text-[#7d6ba8]">{copy.sub}</p>
+                {secretWord ? (
+                  <p className="mt-3 rounded-2xl bg-white px-3 py-2 text-sm font-extrabold tracking-wide text-[#4b8f72]">
+                    {secretWord}
+                  </p>
+                ) : isImposter ? (
+                  <p className="mt-3 text-[11px] font-extrabold uppercase tracking-widest text-[#d66470]">No secret word</p>
+                ) : null}
               </>
             ) : (
               <>
@@ -662,7 +667,7 @@ export function RoleReveal({ room, self }: Shared) {
         </motion.button>
         <div className="mt-4 flex gap-2">
           <Badge tone={self?.role === "imposter" ? "pink" : "mint"}>
-            {self?.role === "imposter" ? "IMPOSTER" : self?.secretWord ? `SECRET WORD · ${self.secretWord}` : "NO WORD FOR YOU"}
+            {self?.role === "imposter" ? "IMPOSTER" : secretWord ? `SECRET WORD · ${secretWord}` : revealed ? "REVEALED" : "HIDDEN"}
           </Badge>
           <Badge tone="lavender">ROUND {room.round}</Badge>
         </div>
