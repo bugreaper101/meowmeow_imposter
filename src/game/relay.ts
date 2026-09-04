@@ -13,6 +13,7 @@ let connected = false;
 let activeBroker = 0;
 let inboxTopic = "";
 let privateTopic = "";
+let outTopic = "";
 let handler: MessageHandler | null = null;
 
 export function inboxPath(code: string) {
@@ -21,6 +22,10 @@ export function inboxPath(code: string) {
 
 export function privatePath(code: string, clientId: string) {
   return `mmi/v1/${code.trim().toUpperCase()}/p/${clientId}`;
+}
+
+export function outPath(code: string) {
+  return `mmi/v1/${code.trim().toUpperCase()}/out`;
 }
 
 export function isRelayReady() {
@@ -42,8 +47,9 @@ function attachClient(next: MqttClient) {
   client = next;
   next.on("connect", () => {
     connected = true;
-    if (inboxTopic) next.subscribe(inboxTopic, { qos: 0 });
-    if (privateTopic) next.subscribe(privateTopic, { qos: 0 });
+    if (inboxTopic) next.subscribe(inboxTopic, { qos: 1 });
+    if (privateTopic) next.subscribe(privateTopic, { qos: 1 });
+    if (outTopic) next.subscribe(outTopic, { qos: 1 });
   });
   next.on("reconnect", () => {
     connected = false;
@@ -96,10 +102,12 @@ export async function connectRelay(opts: {
   handler = opts.onMessage;
   inboxTopic = opts.role === "host" ? inboxPath(opts.code) : "";
   privateTopic = opts.role === "guest" ? privatePath(opts.code, opts.clientId) : "";
+  outTopic = opts.role === "guest" ? outPath(opts.code) : "";
 
   if (client && connected) {
-    if (inboxTopic) client.subscribe(inboxTopic, { qos: 0 });
-    if (privateTopic) client.subscribe(privateTopic, { qos: 0 });
+    if (inboxTopic) client.subscribe(inboxTopic, { qos: 1 });
+    if (privateTopic) client.subscribe(privateTopic, { qos: 1 });
+    if (outTopic) client.subscribe(outTopic, { qos: 1 });
     return;
   }
 
@@ -122,8 +130,9 @@ export async function connectRelay(opts: {
       activeBroker = (activeBroker + i) % BROKERS.length;
       attachClient(next);
       connected = true;
-      if (inboxTopic) next.subscribe(inboxTopic, { qos: 0 });
-      if (privateTopic) next.subscribe(privateTopic, { qos: 0 });
+      if (inboxTopic) next.subscribe(inboxTopic, { qos: 1 });
+      if (privateTopic) next.subscribe(privateTopic, { qos: 1 });
+      if (outTopic) next.subscribe(outTopic, { qos: 1 });
       return;
     } catch (error) {
       lastError = error as Error;
@@ -135,7 +144,7 @@ export async function connectRelay(opts: {
 export function relayPublish(topic: string, payload: unknown, retain = false) {
   if (!client || !connected) return false;
   try {
-    client.publish(topic, JSON.stringify(payload), { qos: 0, retain });
+    client.publish(topic, JSON.stringify(payload), { qos: 1, retain });
     return true;
   } catch {
     return false;
@@ -146,6 +155,7 @@ export function disconnectRelay() {
   handler = null;
   inboxTopic = "";
   privateTopic = "";
+  outTopic = "";
   connected = false;
   if (!client) return;
   try {

@@ -1,7 +1,7 @@
 import type { PrivateState, PublicPlayer, RoomSettings, RoomState, ServerMessage, Role } from "./protocol";
 import { getGameState, resetGameState, setGameState } from "./store";
 import { getClientId, loadHostRoom, loadSession, saveHostRoom, saveSession } from "./prefs";
-import { connectRelay, disconnectRelay, inboxPath, isRelayReady, privatePath, relayPublish } from "./relay";
+import { connectRelay, disconnectRelay, inboxPath, isRelayReady, outPath, privatePath, relayPublish } from "./relay";
 
 type Outgoing = Record<string, unknown> & { t: string };
 type SignalHandler = (from: string, signal: unknown) => void;
@@ -367,6 +367,7 @@ function finalizeDiscussion(room: HostRoom) {
 function publishRoom(room: HostRoom, fromPeerId?: string) {
   const publicRoom = buildPublicRoom(room);
   const peers = [...peerConnections.keys()].filter((peerId) => peerId !== fromPeerId);
+  relayPublish(outPath(room.code), { t: "room", room: publicRoom });
   for (const player of room.players) {
     const target = peerConnections.get(player.peerId);
     if (!target) continue;
