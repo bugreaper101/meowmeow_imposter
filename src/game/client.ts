@@ -60,6 +60,8 @@ let queue: Outgoing[] = [];
 let intentionalClose = false;
 let peerGeneration = 0;
 let joinRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let hostIdAttempts = 0;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let signalHandler: SignalHandler | null = null;
 let closeHandler: ((from: string) => void) | null = null;
 let mode: "host" | "guest" | "none" = "none";
@@ -93,6 +95,30 @@ function generateRoomCode() {
 function generatePlayerId() {
   return `p_${Math.random().toString(36).slice(2, 8)}`;
 }
+
+const MAX_PLAYERS = 30;
+
+const PEER_OPTIONS = {
+  host: "0.peerjs.com",
+  port: 443,
+  path: "/",
+  secure: true,
+  debug: 0,
+  pingInterval: 5000,
+  config: {
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+      { urls: "stun:stun2.l.google.com:19302" },
+      {
+        urls: ["turn:eu-0.turn.peerjs.com:3478", "turn:us-0.turn.peerjs.com:3478"],
+        username: "peerjs",
+        credential: "peerjsp",
+      },
+    ],
+    sdpSemantics: "unified-plan" as const,
+  },
+};
 
 function hostPeerId(code: string) {
   return `mmi-${code.trim().toUpperCase()}-host`;
@@ -383,6 +409,7 @@ function persistSession() {
     token: currentToken || `${currentRoomCode}-${currentPlayerId}`,
     nickname: currentPlayerNick,
     avatar: currentAvatar,
+    hostPeerId: currentHostPeerId,
   });
   if (mode === "host" && localRoom) {
     saveHostRoom({ playerId: currentPlayerId, room: localRoom });
@@ -533,6 +560,13 @@ function handleIncoming(msg: Outgoing, conn: DataConnection) {
         player.nickname = nickname;
         if (avatar) player.avatar = avatar;
         if (clientId) player.clientId = clientId;
+      } else if (localRoom.players.filter((entry) => entry.connected).length >= MAX_PLAYERS) {
+        try {
+          conn.send({ t: "error", code: "room_full", message: "This room is full (30 kitties)." });
+        } catch {
+          // ignore
+        }
+        return;
       } else {
         player = {
           id: generatePlayerId(),
@@ -861,6 +895,10 @@ function clearJoinRetry() {
 function destroyPeer() {
   peerGeneration += 1;
   clearJoinRetry();
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
   try {
     peer?.destroy();
   } catch {
@@ -868,6 +906,18 @@ function destroyPeer() {
   }
   peer = null;
   hostConnection = null;
+}
+
+function scheduleFullReconnect(hostId?: string | null) {
+  if (intentionalClose) return;
+  if (reconnectTimer) return;
+  setGameState({ status: "reconnecting" });
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    if (intentionalClose) return;
+    destroyPeer();
+    void connect(hostId ?? currentHostPeerId ?? undefined);
+  }, 1200);
 }
 
 export function connect(hostPeerIdOverride?: string): Promise<void> {
@@ -902,29 +952,26 @@ export function connect(hostPeerIdOverride?: string): Promise<void> {
   setGameState({ status: "connecting" });
   return new Promise((resolve) => {
     try {
-      const peerOptions = {
-        host: "0.peerjs.com",
-        port: 443,
-        path: "/",
-        secure: true,
-        debug: 0,
-      };
-      peer = mode === "guest" || !hostId ? new Peer(peerOptions) : new Peer(hostId, peerOptions);
+      peer = mode === "guest" || !hostId ? new Peer(PEER_OPTIONS) : new Peer(hostId, PEER_OPTIONS);
     } catch (error) {
       console.error("PeerJS init failed", error);
-      setGameState({ status: "offline" });
+      scheduleFullReconnect(hostId);
       resolve();
       return;
     }
 
     peer.on("open", (id) => {
       if (gen !== peerGeneration) return;
+      hostIdAttempts = 0;
+      currentHostPeerId = mode === "host" ? id : currentHostPeerId;
       if (mode === "host" && localRoom) {
+        localRoom.hostPeerId = id;
         const hostPlayer = localRoom.players.find((entry) => entry.id === currentPlayerId);
         if (hostPlayer && hostPlayer.peerId !== id) {
           hostPlayer.peerId = id;
-          publishStateToAll();
         }
+        persistSession();
+        publishStateToAll();
       }
       setGameState({ status: "online", lastError: null, playerId: currentPlayerId });
       if (hostId && mode === "guest" && !hostConnection?.open) {
@@ -940,22 +987,48 @@ export function connect(hostPeerIdOverride?: string): Promise<void> {
       if (mode === "host") peerConnections.set(conn.peer, conn);
     });
 
+    peer.on("disconnected", () => {
+      if (gen !== peerGeneration || intentionalClose) return;
+      setGameState({ status: "reconnecting" });
+      try {
+        peer?.reconnect();
+      } catch {
+        scheduleFullReconnect(hostId);
+      }
+    });
+
     peer.on("error", (error: { type?: string } | Error) => {
       if (gen !== peerGeneration) return;
       console.error("PeerJS error", error);
       const type = "type" in error ? error.type : undefined;
-      if ((type === "peer-unavailable" || type === "network" || type === "disconnected") && mode === "guest" && hostId) {
+      if (type === "unavailable-id" && mode === "host") {
+        hostIdAttempts += 1;
+        const nextCode = generateRoomCode();
+        currentRoomCode = nextCode;
+        currentHostPeerId = hostPeerId(nextCode);
+        if (localRoom) {
+          localRoom.code = nextCode;
+          localRoom.hostPeerId = currentHostPeerId;
+        }
+        persistSession();
+        setGameState({ room: localRoom ? buildPublicRoom(localRoom) : null });
+        destroyPeer();
+        void connect(currentHostPeerId);
+        return;
+      }
+      if ((type === "peer-unavailable" || type === "network" || type === "disconnected" || type === "socket-closed" || type === "server-error") && mode === "guest" && hostId) {
+        setGameState({ status: "reconnecting" });
         scheduleJoinRetry(hostId);
         return;
       }
       if (type === "peer-unavailable") {
         setGameState({
-          status: "offline",
-          lastError: { code: "room_not_found", message: "We couldn't find that room." },
+          status: "reconnecting",
+          lastError: { code: "room_not_found", message: "We couldn't find that room. Check the code and try again." },
         });
         return;
       }
-      setGameState({ status: "offline" });
+      scheduleFullReconnect(hostId);
     });
   });
 }
@@ -984,7 +1057,7 @@ function scheduleJoinRetry(hostId: string) {
 
 function connectToHost(hostId: string) {
   if (!peer || !peer.open || hostConnection?.open) return;
-  const conn = peer.connect(hostId, { reliable: true });
+  const conn = peer.connect(hostId, { reliable: true, serialization: "json" });
   hostConnection = conn;
   const timeout = setTimeout(() => {
     if (conn.open || mode !== "guest") return;
@@ -1062,7 +1135,8 @@ export function send(msg: Outgoing) {
     }
     mode = "guest";
     currentRoomCode = String(msg["code"] || "");
-    currentHostPeerId = hostPeerId(currentRoomCode);
+    const requestedHost = typeof msg["hostPeerId"] === "string" ? String(msg["hostPeerId"]).trim() : "";
+    currentHostPeerId = requestedHost || hostPeerId(currentRoomCode);
     currentPlayerNick = String(msg["nickname"] || "Guest");
     currentAvatar = typeof msg["avatar"] === "string" ? msg["avatar"] : null;
     persistSession();
@@ -1120,7 +1194,7 @@ export function resumeIfPossible() {
   currentToken = session.token;
   currentPlayerNick = session.nickname;
   currentAvatar = session.avatar;
-  currentHostPeerId = hostPeerId(session.code);
+  currentHostPeerId = session.hostPeerId || hostPeerId(session.code);
   if (session.mode === "host") {
     const saved = loadHostRoom<{ playerId: string; room: HostRoom }>();
     if (!saved?.room) return false;
@@ -1158,7 +1232,8 @@ export function clearError() {
 export const actions = {
   createRoom: (nickname: string, avatar: string | null, settings: Partial<RoomSettings>) =>
     send({ t: "createRoom", nickname, avatar, settings }),
-  joinRoom: (code: string, nickname: string, avatar: string | null) => send({ t: "joinRoom", code, nickname, avatar }),
+  joinRoom: (code: string, nickname: string, avatar: string | null, hostPeerId?: string | null) =>
+    send({ t: "joinRoom", code, nickname, avatar, hostPeerId: hostPeerId || undefined }),
   selectAvatar: (avatar: string) => send({ t: "selectAvatar", avatar }),
   updateSettings: (settings: Partial<RoomSettings>) => send({ t: "updateSettings", settings }),
   startGame: () => send({ t: "startGame" }),

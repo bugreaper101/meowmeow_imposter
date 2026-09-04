@@ -55,6 +55,7 @@ export type GameSession = {
   token: string;
   nickname: string;
   avatar: string | null;
+  hostPeerId?: string | null;
 };
 
 export function getClientId(): string {

@@ -55,7 +55,16 @@ export default function MeowMeowImposter() {
     setSpeakerOn(prefs.speakerEnabled);
     const resumed = resumeIfPossible();
     if (resumed) return;
-    const invited = new URLSearchParams(window.location.search).get("code")?.replace(/\D/g, "").slice(0, CODE_LENGTH);
+    const params = new URLSearchParams(window.location.search);
+    const invited = params.get("code")?.replace(/\D/g, "").slice(0, CODE_LENGTH);
+    const invitedHost = params.get("host")?.trim() || "";
+    if (invitedHost) {
+      try {
+        window.sessionStorage.setItem("meowmeow.inviteHost", invitedHost);
+      } catch {
+        /* ignore */
+      }
+    }
     if (invited && invited.length === CODE_LENGTH) {
       setCode(invited.split(""));
       setMode("join");
@@ -169,7 +178,13 @@ export default function MeowMeowImposter() {
     if (joiningRef.current || room) return;
     joiningRef.current = true;
     commitProfile();
-    actions.joinRoom(code.join(""), nickname.trim(), avatar);
+    let inviteHost = "";
+    try {
+      inviteHost = window.sessionStorage.getItem("meowmeow.inviteHost") || "";
+    } catch {
+      inviteHost = "";
+    }
+    actions.joinRoom(code.join(""), nickname.trim(), avatar, inviteHost || undefined);
   };
 
   const leaveRoom = useCallback(() => {
@@ -273,6 +288,7 @@ function inviteUrl(code: string) {
   url.search = "";
   url.hash = "";
   url.searchParams.set("code", code);
+  url.searchParams.set("host", `mmi-${code.trim().toUpperCase()}-host`);
   return url.toString();
 }
 
@@ -346,7 +362,7 @@ function Splash({ go }: Shared) {
 function Welcome({ go, setMode }: Shared) {
   return (
     <div className="flex flex-1 flex-col">
-      <Top title="Gather your kitties" sub="A cozy little mystery for 3–30 friends." />
+      <Top title="Gather your kitties" sub="Anyone with the app can join over the internet — up to 30 kitties in a room." />
       <div className="relative my-auto flex justify-center py-8">
         <div className="absolute size-52 rounded-full bg-[#fbe9ef]" />
         {avatarCatalog.slice(0, 3).map((a, i) => (
@@ -554,6 +570,7 @@ function Lobby({ room, self, setToast, setDialog }: Shared) {
         <Badge tone="lavender"><Timer size={10} /> {room.settings.rounds} ROUNDS</Badge>
         <Badge tone="cream">{room.settings.imposters} IMPOSTER{room.settings.imposters > 1 ? "S" : ""}</Badge>
       </div>
+      <p className="mb-3 text-center text-[10px] font-extrabold leading-4 text-[#9a86a8]">Share the code. Any phone on the internet can join — you only need 3 to start.</p>
       <div className="grid flex-1 grid-cols-3 content-start gap-3 overflow-y-auto pb-3 [scrollbar-width:none]">
         {players.map((player) => (
           <div key={player.id} className={`relative grid place-items-center rounded-2xl p-2 ${player.host ? "bg-[#fff2cd] shadow-[0_4px_0_#f0dfae]" : "bg-white shadow-[0_3px_0_#f1e6ed]"} ${player.connected ? "" : "opacity-45 grayscale"}`}>
