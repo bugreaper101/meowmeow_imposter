@@ -3,6 +3,10 @@ import { createRouter } from "@tanstack/react-router";
 import { routeTree } from "./routeTree.gen";
 
 function getBasepath() {
+  if (typeof window !== "undefined") {
+    const match = window.location.pathname.match(/^(\/meowmeow_imposter)(?=\/|$)/);
+    if (match) return match[1];
+  }
   const base = import.meta.env.BASE_URL || "/";
   if (base === "/") return undefined;
   return base.replace(/\/$/, "");

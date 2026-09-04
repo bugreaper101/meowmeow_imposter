@@ -5,8 +5,8 @@ const isGitHubPages = Boolean(process.env["GITHUB_ACTIONS"]);
 const base = isGitHubPages ? `/${repoName}/` : "/";
 
 export default defineConfig({
-  base,
   vite: {
+    base,
     server: {
       watch: {
         ignored: ["**/docs/**", "**/assets/**"],

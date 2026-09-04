@@ -59,7 +59,6 @@ export default function MeowMeowImposter() {
       setMode("join");
       setStage("Join Room");
     }
-    void connect();
   }, []);
 
   useEffect(() => {

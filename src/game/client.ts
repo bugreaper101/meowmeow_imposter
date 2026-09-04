@@ -57,6 +57,8 @@ let peer: Peer | null = null;
 let hostConnection: DataConnection | null = null;
 let queue: Outgoing[] = [];
 let intentionalClose = false;
+let peerGeneration = 0;
+let joinRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let signalHandler: SignalHandler | null = null;
 let closeHandler: ((from: string) => void) | null = null;
 let mode: "host" | "guest" | "none" = "none";
@@ -801,22 +803,54 @@ export function onVoiceClose(handler: ((from: string) => void) | null) {
   closeHandler = handler;
 }
 
+function clearJoinRetry() {
+  if (joinRetryTimer) {
+    clearTimeout(joinRetryTimer);
+    joinRetryTimer = null;
+  }
+}
+
+function destroyPeer() {
+  peerGeneration += 1;
+  clearJoinRetry();
+  try {
+    peer?.destroy();
+  } catch {
+    // ignore
+  }
+  peer = null;
+  hostConnection = null;
+}
+
 export function connect(hostPeerIdOverride?: string): Promise<void> {
   if (typeof window === "undefined") return Promise.resolve();
+  if (mode !== "host" && mode !== "guest") return Promise.resolve();
+
   const hostId = hostPeerIdOverride ?? currentHostPeerId;
-  const shouldRecreateHostPeer = Boolean(peer && hostId && mode === "host" && peer.id !== hostId);
-  if (shouldRecreateHostPeer) {
-    peer?.destroy();
-    peer = null;
-    hostConnection = null;
+  if (mode === "host" && peer && hostId && peer.id !== hostId) {
+    destroyPeer();
   }
+
   if (peer) {
-    if (hostId && mode === "guest" && !hostConnection?.open) {
-      connectToHost(hostId);
+    if (peer.open) {
+      if (mode === "guest" && hostId && !hostConnection?.open) connectToHost(hostId);
+      return Promise.resolve();
     }
-    return Promise.resolve();
+    return new Promise((resolve) => {
+      const gen = peerGeneration;
+      peer?.once("open", () => {
+        if (gen !== peerGeneration) {
+          resolve();
+          return;
+        }
+        if (mode === "guest" && hostId && !hostConnection?.open) connectToHost(hostId);
+        resolve();
+      });
+    });
   }
+
   intentionalClose = false;
+  const gen = ++peerGeneration;
   setGameState({ status: "connecting" });
   return new Promise((resolve) => {
     try {
@@ -827,11 +861,7 @@ export function connect(hostPeerIdOverride?: string): Promise<void> {
         secure: true,
         debug: 0,
       };
-      if (mode === "guest") {
-        peer = new Peer({ ...peerOptions });
-      } else {
-        peer = new Peer(String(hostId ?? ""), peerOptions);
-      }
+      peer = mode === "guest" || !hostId ? new Peer(peerOptions) : new Peer(hostId, peerOptions);
     } catch (error) {
       console.error("PeerJS init failed", error);
       setGameState({ status: "offline" });
@@ -840,7 +870,7 @@ export function connect(hostPeerIdOverride?: string): Promise<void> {
     }
 
     peer.on("open", (id) => {
-      currentPlayerId = currentPlayerId ?? id;
+      if (gen !== peerGeneration) return;
       if (mode === "host" && localRoom) {
         const hostPlayer = localRoom.players.find((entry) => entry.id === currentPlayerId);
         if (hostPlayer && hostPlayer.peerId !== id) {
@@ -852,42 +882,71 @@ export function connect(hostPeerIdOverride?: string): Promise<void> {
       if (hostId && mode === "guest" && !hostConnection?.open) {
         connectToHost(hostId);
       }
-      if (hostConnection?.open) {
-        flushQueuedMessages();
-      }
+      if (hostConnection?.open) flushQueuedMessages();
       resolve();
     });
 
     peer.on("connection", (conn) => {
+      if (gen !== peerGeneration) return;
       bindPeerEvents(conn);
-      if (mode === "host") {
-        peerConnections.set(conn.peer, conn);
-      }
+      if (mode === "host") peerConnections.set(conn.peer, conn);
     });
 
-    peer.on("error", (error) => {
+    peer.on("error", (error: { type?: string } | Error) => {
+      if (gen !== peerGeneration) return;
       console.error("PeerJS error", error);
+      const type = "type" in error ? error.type : undefined;
+      if ((type === "peer-unavailable" || type === "network" || type === "disconnected") && mode === "guest" && hostId) {
+        scheduleJoinRetry(hostId);
+        return;
+      }
+      if (type === "peer-unavailable") {
+        setGameState({
+          status: "offline",
+          lastError: { code: "room_not_found", message: "We couldn't find that room." },
+        });
+        return;
+      }
       setGameState({ status: "offline" });
     });
   });
 }
 
+function scheduleJoinRetry(hostId: string) {
+  clearJoinRetry();
+  joinRetryTimer = setTimeout(() => {
+    if (mode !== "guest") return;
+    hostConnection = null;
+    if (peer?.open) connectToHost(hostId);
+  }, 900);
+}
+
 function connectToHost(hostId: string) {
-  if (!peer || hostConnection?.open) return;
+  if (!peer || !peer.open || hostConnection?.open) return;
   const conn = peer.connect(hostId, { reliable: true });
   hostConnection = conn;
+  const timeout = setTimeout(() => {
+    if (conn.open || mode !== "guest") return;
+    try {
+      conn.close();
+    } catch {
+      // ignore
+    }
+    hostConnection = null;
+    scheduleJoinRetry(hostId);
+  }, 4000);
+  conn.on("open", () => {
+    clearTimeout(timeout);
+    flushQueuedMessages();
+  });
   conn.on("error", (error) => {
+    clearTimeout(timeout);
     console.error("PeerJS host connection failed", error);
     hostConnection = null;
-    setGameState({
-      status: "offline",
-      lastError: { code: "room_not_found", message: "We couldn't find that room." },
-    });
+    scheduleJoinRetry(hostId);
   });
   bindPeerEvents(conn);
-  if (conn.open) {
-    flushQueuedMessages();
-  }
+  if (conn.open) flushQueuedMessages();
 }
 
 export function send(msg: Outgoing) {
@@ -981,8 +1040,7 @@ export function disconnect() {
   queue = [];
   hostConnection?.close();
   hostConnection = null;
-  peer?.destroy();
-  peer = null;
+  destroyPeer();
   peerConnections.clear();
   resetRoomState();
 }
